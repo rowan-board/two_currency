@@ -1,0 +1,309 @@
+---
+title: "stan_data_formant_directed_action"
+author: "RB"
+date: "19/10/2021"
+output: html_document
+---
+load libraries 
+```{r}
+library(tidyverse)
+
+# real (0) of simulated (1) data?
+simulated = 0
+
+# offline (0) or online (1) data?
+online = 1
+
+# include patient data??
+pat = 0
+```
+
+# load all the data and combine
+```{r}
+if (online == 1){
+  if (simulated == 0){ 
+    # list of subject numbers in strings
+    nr_s <- c('02','03','04','05','06','07','08','09','10','11','12','13','14','15','16','17','18','19','20','21','22')
+    N <- length(nr_s)+1
+    
+    # read in first data file
+    # adapting to trial number in order to deal with timedout trials which are being filtered out (shown by inf on chosenDice)
+    a <- read.csv("raw_data/main/sub_01/raw1_01.csv") %>%
+      select(!contains("fives")) %>%
+      filter(!chosenDice == 'Inf')
+    a <- a %>%
+      mutate(allTrialIndex = 1:nrow(a))
+    a['subject_nr'] <- '01'
+    
+    x = max(nrow(a)) # get the last trial number for run 1 
+    
+    # read in run 2
+    b <- read.csv("raw_data/main/sub_01/raw2_01.csv") %>%
+      select(!contains("fives")) %>%
+      filter(!chosenDice == 'Inf')
+    
+    y = x+max(nrow(b)) # get the last trial of run 2, add last trial of run 1 to max trial number of run 2
+    
+    z = (x+1):y  # get the vector of trial numbers for run 2
+    
+    b <- b %>%
+      mutate(allTrialIndex = z)
+    b['subject_nr'] <- '01'
+    
+    data <- rbind(a,b)
+    
+    # create empty vector of zeros, 1 for each sub
+    # first is no of trials for each subject, then the first trial of block 2
+    Tsubj <- rep(0,N)
+    blockStart <- rep(0,N)
+    
+    # fill the first value of the vector with the values for ppt 1
+    Tsubj[1] = y
+    blockStart[1] = x
+    
+    # loop through the remaining files and bind to data 
+    for (i in 1:21){
+      file_1 <- str_replace_all("raw_data/main/sub_01/raw1_01.csv",'01',nr_s[i])
+      file_2 <- str_replace_all("raw_data/main/sub_01/raw2_01.csv",'01',nr_s[i])
+      
+      a <- read.csv(file_1) %>%
+        select(!contains("fives") )%>%
+        filter(!chosenDice == 'Inf')
+      a <- a %>%
+        mutate(allTrialIndex = 1:nrow(a))
+      a['subject_nr'] <- nr_s[i]
+      
+      x = max(nrow(a)) # get the last trial number
+      
+      b <- read.csv(file_2) %>%
+        select(!contains("fives")) %>%
+        filter(!chosenDice == 'Inf')
+      
+      y = x+max(nrow(b))
+      
+      z = (x+1):y
+      
+      b <- b %>%
+        mutate(allTrialIndex = z)
+      b['subject_nr'] <- nr_s[i]
+      
+      data <- rbind(data,a,b)
+      
+      # we've already filled the first value so start from the 2nd item of the vector 
+      Tsubj[i+1] = y
+      blockStart[i+1] = x
+    }
+  } else if (simulated == 1) {
+    data <- read.csv('raw_data/simulations/m5_simulated_data.csv')
+    blockStart = rep(251,22)
+    Tsubj = rep(500,22)
+    N=22
+  }
+} else if (online == 0){
+  # list the subject numbers in strings
+  nr_s <- c('07','08','09','10','11','12','13','14','15','16','17','18','19','20','21','22',
+            '23','24','25','26','27','28','29','30','31','32', '33', '34', '35', '36', '37', '38', '39', '40')
+  N <- length(nr_s)
+  
+  sub <- 1:length(nr_s)
+  
+  # read in the first data file
+  data <- read.csv("raw_data/behavioural/DA_07.csv")
+  data['subject_nr'] <- sub[1]
+  
+  # create empty vector of zeros, 1 for each sub
+  # first is no of trials for each subject, then the first trial of block 2
+  Tsubj <- rep(0,N)
+  blockStart <- rep(0,N)
+  
+  x = max(nrow(data)) # get the last trial number for run 1
+  
+  Tsubj[1] <- x
+  
+  # loop through the remaining files and bind the data
+  for (i in 2:N){
+    file <- str_replace_all("raw_data/behavioural/DA_03.csv",'03',nr_s[i])  
+    
+    a <- read.csv(file)
+    a['subject_nr'] <- sub[i]
+    
+    # check if 'bank_1' column exists, if it does that means bug occurred that split banks
+    # need to remove bank_2
+    # and rename bank_1 as bank
+    z = "bank_1" %in% colnames(a)
+    if (z == TRUE){
+      a <- a %>%
+        rename(bank=bank_1) %>%
+        select(!bank_2)
+    }
+    
+    x = max(nrow(a)) # get the last trial number for run 1
+  
+    Tsubj[i] <- x
+    
+    data <- rbind(data,a)
+    n = length(nr_s)
+  
+    real_data <- data
+  }
+  
+  ## now add the offline patient data if needed
+  if (pat == 1){
+    p_data <- read.csv('raw_data/patient_AM_data/pt_01.csv')
+    p_data['subject_nr'] <- as.character(max(as.integer(nr_s))+1)
+
+    real_data <- rbind(real_data,p_data)
+  }
+} 
+
+## patient blocks
+if (online == 1 && pat == 1 && simulated == 0){
+  p1 <- read.csv('raw_data/patient_AM_data/ps1_01.csv') %>%
+        select(!contains("fives")) %>%
+        filter(!chosenDice == 'Inf')
+  p2 <- read.csv('raw_data/patient_AM_data/ps2_01.csv') %>%
+        select(!contains("fives")) %>%
+        filter(!chosenDice == 'Inf')
+  p3 <- read.csv('raw_data/patient_AM_data/ps3_01.csv') %>%
+        select(!contains("fives")) %>%
+        filter(!chosenDice == 'Inf')
+  
+  p_data <- rbind(p1,p2,p3)
+  l = length(p_data$allTrialIndex)
+  p_data$allTrialIndex = 1:l
+  
+  p_data['subject_nr'] <- '23'
+  
+  data <- rbind(data,p_data)
+  
+  N=N+1
+  x <- max(data$allTrialIndex)
+  Tsubj = c(Tsubj,x)
+  
+  ## blockstart 
+  ## lets add an extra column of zeros as we need 
+  x <- rep(0,22)
+  blockStart <- cbind(blockStart,x)
+  
+  ## now add an empty ppt to fill for the patient
+  x <- c(0,0)
+  blockStart <- rbind(blockStart,x)
+  
+  ## find where new block starts and record trial number 
+  count = 0
+  for (i in 2:l-1){
+    # find where new block starts
+    if (p_data[i,]$trialIndex > p_data[i+1,]$trialIndex){
+      count = count + 1
+      blockStart[23,count] = p_data[i+1,]$allTrialIndex
+      # 23 is subject number of patient
+    } 
+  }
+}
+
+# patient vector, 1 = patient 0 = healthy 
+patient = rep(0,N)
+if (pat == 1){
+  patient[N+1] <- 1
+}
+```
+
+Isolate rewards and choices into own data frames and pivot
+```{r}
+### 1 row for each participant, each row must be equal length
+# turn all NAs into 0, due to timeouts all runs have different numbers of trials
+# but all rows need to all have the same number of columns, =  to max(Tsubj)
+# make all points after the last usable trial 0, as currently they are NAs and we need them to be readable for STAN
+
+
+rwd <- data %>%
+  select(totalWin, allTrialIndex, subject_nr) %>%
+  pivot_wider(names_from = allTrialIndex, values_from = totalWin) %>%
+  column_to_rownames(var="subject_nr") 
+rwd[is.na(rwd)] <- 0
+
+
+choice <- data %>%
+  select(chosenDice, allTrialIndex, subject_nr) %>%
+  pivot_wider(names_from = allTrialIndex, values_from = chosenDice) %>%
+  column_to_rownames(var="subject_nr")
+choice[is.na(choice)] <- 0
+
+winCurr <- data %>%
+  select(winCurrency, allTrialIndex, subject_nr) %>%
+  pivot_wider(names_from = allTrialIndex, values_from = winCurrency) %>%
+  column_to_rownames(var="subject_nr")
+winCurr[is.na(winCurr)] <- 0
+
+#not used atm
+unchosen <- matrix(
+  c(2, 1),
+  nrow=2,
+  ncol=1,
+  byrow = TRUE)
+
+Qinits <- matrix(
+  c(0,0,0,0),
+  nrow=2,
+  ncol=2,
+  byrow = TRUE
+)
+
+isPurseFull_1 <- data %>%
+  select(isPurseFull_1, allTrialIndex, subject_nr) %>%
+  pivot_wider(names_from = allTrialIndex, values_from = isPurseFull_1) %>%
+  column_to_rownames(var="subject_nr")
+isPurseFull_1[is.na(isPurseFull_1)] <- 0
+
+
+isPurseFull_2 <- data %>%
+  select(isPurseFull_2, allTrialIndex, subject_nr) %>%
+  pivot_wider(names_from = allTrialIndex, values_from = isPurseFull_2) %>%
+  column_to_rownames(var="subject_nr")
+isPurseFull_2[is.na(isPurseFull_2)] <- 0
+
+## put some empty column of zeros to fit into model
+if (patient == 0){
+  blockStart <- cbind(blockStart,rep(0,length(blockStart)))
+}
+```
+
+Get everything in the right format
+```{r}
+# change the data frames to matrices and sort everything else
+N = as.integer(N)
+T = as.integer(max(Tsubj))
+Tsubj = as.integer(Tsubj)
+Nopt = as.integer(2)
+Nrwd = as.integer(2)
+rwd = data.matrix(rwd, rownames.force = NA)
+Vinits = as.numeric(rep(0, 2))
+Qinits = as.matrix(Qinits)
+Minits = as.integer(rep(1, 2))
+choice = data.matrix(choice, rownames.force = NA)
+winCurr = data.matrix(winCurr, rownames.force = NA)
+isPurseFull_1 = data.matrix(isPurseFull_1, rownames.force = NA)
+isPurseFull_2 = data.matrix(isPurseFull_2, rownames.force = NA)
+blockStart = as.matrix(blockStart)
+P = as.numeric(patient)
+```
+
+set the data list and save
+```{r}
+datalist <- list(N,T,Tsubj,Nopt,Nrwd,rwd,Vinits,Qinits,Minits,choice,winCurr,isPurseFull_1,isPurseFull_2,blockStart,P)
+names(datalist) <- c("N","T","Tsubj","Nopt","Nrwd","rwd","Vinits","Qinits","Minits","choice","winCurr","isPurseFull_1","isPurseFull_2","blockStart","P")
+if (online == 1){
+  if (simulated == 0 && pat == 0){
+    save(datalist, file = "modelling/datalists/online_datalist.RData")
+  } else if (simulated == 0 & pat == 1){
+    save(datalist, file = "modelling/datalists/online_patient_datalist.RData")
+  } else if (simulated == 1 & pat == 0){
+    save(datalist, file = "modelling/datalists/online_simulated_datalist.RData")
+  }
+} else if (online == 0 & pat == 0){
+  save(datalist, file = "modelling/datalists/offline_datalist.RData")
+} else if (online == 0 & pat == 1){
+  save(datalist, file = "modelling/datalists/offline_patient_datalist.RData")
+}
+
+```

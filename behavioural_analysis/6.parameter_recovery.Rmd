@@ -1,0 +1,533 @@
+---
+title: "parameter_recovery"
+author: "RB"
+date: '2022-06-21'
+output: html_document
+---
+
+Load packages and Data
+```{r}
+library(tidyverse)
+library(rstan)
+
+parameters <- read.csv("modelling/summaries/m5_summary.csv")
+
+lr = parameters[5:26,2]
+inv_tau = parameters[49:70,2]
+```
+
+### choice simulation ###
+
+```{r}
+# model variables
+set.seed(321)  # to set a seed value
+N=22    # no. of ppts to simulate
+NTr=250 # no. of trials per block
+nBlocks=2 # no. of blocks 
+totalTrials = NTr*nBlocks # total number of trials
+Tsubj = rep((NTr*nBlocks),N) #vector of no. of trials for each ppt
+Nopt = 2 # no. of options
+Nrwd = 2 # no. of reward types
+Qinits = matrix(0, nrow=2,ncol=2)
+Vinits = rep(0.0,2)
+Minits = rep(1,2)
+
+# task variables
+H = 0.85
+L = 0.15
+threshold = 0.69
+tBack = 8 # no. of trials to look back for when assessing preference threshold 
+rwdConsistent = 0.85 # token to dice is x% consistent
+purseFull = 5
+states = 21
+
+# removed state 1 as no longer included
+# task structure 
+AR = c(L,H,H,0,H,H,L,L,0,H,H,H,0,H,0,0,0,0,0,0,0)
+AG = c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,H,H,H,H,0,H,H)
+BR = c(0,0,0,0,0,0,0,0,0,0,0,0,0,0,H,H,L,L,0,H,H)
+BG = c(H,L,L,0,H,H,H,H,0,H,H,L,0,H,0,0,0,0,0,0,0)
+untilFull = c(0,0,1,0,0,0,0,2,0,0,0,1,0,0,0,0,0,2,0,0,0)
+untilPrefer = c(2,1,0,0,2,0,2,0,0,1,0,0,0,2,1,0,1,0,0,2,0)
+untilCount = c(20,20,0,8,20,8,20,0,8,20,8,0,8,20,20,8,20,0,8,20,8)
+bankAfter = c(0,0,0,0,1,0,0,0,0,2,0,0,0,0,1,0,0,0,0,2,0)
+bankFull = c(3,3,2,2,2,3,3,1,1,1,3,2,2,2,2,3,3,1,1,1,3)
+
+# variables to fill
+rwd <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+rwd_devalued <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+choice <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+winCurr <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+isPurseFull_1 <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+isPurseFull_2 <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+purse = rep(0,2)
+stateT <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+stateTimeT <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+purse1T <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+purse2T <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+ART <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+AGT <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+BRT <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+BGT <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+prefT <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+MR <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+MG <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+VA <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+VB <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+chosenNet <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+chosenDevalued <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+chosenRed <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+chosenGreen <- matrix(0,nrow=N,ncol=(NTr*nBlocks))
+
+for (i in 1:N){
+  
+    v = Vinits
+    Q = Qinits
+    q = Qinits
+    m = Minits
+    pe = Qinits
+    
+    blockNr = 1
+    trialNr = 0
+    state = 1
+    stateTime = 0
+    bank = 0
+    purse = rep(0,2)
+    
+    for (t in 1:Tsubj[i]){
+      ### rules governing state changes
+      # which ever criteria is met first the state should reset
+      trialNr = trialNr + 1
+      stateTime = stateTime + 1
+      
+      # reset variables if we reach the start of block 2
+      if (trialNr == 251){
+        v = Vinits
+        Q = Qinits
+        q = Qinits
+        m = Minits
+        pe = Qinits
+        
+        blockNr = 2
+        state = 1
+        stateTime = 1
+        purse = rep(0,2)
+      }
+  
+      
+      # until count
+      if (untilCount[state] > 0 && stateTime > untilCount[state]){
+        stateTime = 1
+        state = state + 1
+        if (state == 22){
+          state = 1
+          stateTime = 1
+        }
+      } 
+      
+      # until full
+      if (untilFull[state] > 0 && purse[untilFull[state]] == purseFull){
+        stateTime = 1
+        state = state + 1
+        if (state == 22){
+          state = 1
+          stateTime = 1
+        }
+      }
+  
+      # until prefer
+      if (untilPrefer[state] > 0 && stateTime > tBack){
+        if (untilPrefer[state] == 1) {
+          pref = 1-(mean(choice[i,(t-1):(t-tBack)])-1)
+          if (pref > threshold){
+            stateTime = 1
+            state = state + 1
+            prefT[i,t] = pref
+            if (state == 22){
+              state = 1
+              stateTime = 1
+            }
+          }
+        } else if (untilPrefer[state] == 2){
+          pref = mean(choice[i,(t-1):(t-tBack)])-1
+          if (pref > threshold){
+            stateTime = 1
+            state = state + 1
+            prefT[i,t] = pref
+            if (state == 22){
+              state = 1
+              stateTime = 1
+            }
+          }
+        }
+      }
+      
+      stateT[i,t] = state
+      stateTimeT[i,t] = stateTime
+  
+      
+      
+      ## move purse to bank with the state change?
+      # check every time we move to a new state
+      if (state > 1 && stateTime == 1){
+        if (bankAfter[state-1] == 1){
+          purse[1] = 0
+          bank = bank + 5
+        }
+        if (bankAfter[state-1] == 2){
+          purse[2] = 0
+          bank = bank + 5
+        }
+      }
+      
+      # reward probabilities
+      rwdProbA = AR[state]+AG[state]
+      rwdProbB = BR[state]+BG[state]
+      
+      ## Decision phase
+      # set the motivation vector depending on whether the purse is full
+      if (t > 1 && isPurseFull_1[i,t-1] == 1){
+        m[1] = 0;
+        m[2] = 1;
+      } else if (t > 1 && isPurseFull_2[i,t-1] == 1){
+        m[1] = 1;
+        m[2] = 0;
+      } else {
+        m = Minits;
+      }
+      
+      MR[i,t] <- m[1]
+      MG[i,t] <- m[2]
+       
+      # collapse vectors and update v
+      v[1] = (m[1]*Q[1,1])+(m[2]*Q[2,1]);
+      v[2] = (m[1]*Q[1,2])+(m[2]*Q[2,2]);
+      
+      VA[i,t] <- v[1]
+      VB[i,t] <- v[2]
+      
+      # generate choices
+      choiceProb = 1/(1+exp(-inv_tau[i] * (v[1]-v[2])));
+      choiceThreshold = runif(1)
+      if (choiceProb > choiceThreshold){
+        choice[i,t] = 1
+      } else if (choiceProb < choiceThreshold){
+        choice[i,t] = 2
+      }
+      
+      # generate reward and token colour
+      rewardThreshold = runif(1)
+      # update reward for choice A
+      if (choice[i,t] == 1){
+        if (rewardThreshold < rwdProbA){
+          rwd[i,t] = 1
+          colourThreshold = runif(1)
+          if (AR[state]>AG[state]){
+            if (colourThreshold < rwdConsistent){
+              winCurr[i,t] = 1
+            } else if (colourThreshold > rwdConsistent){
+              winCurr[i,t] = 2
+            }
+          } else if (AR[state]<AG[state]) {
+            if (colourThreshold < rwdConsistent){
+              winCurr[i,t] = 2
+            } else if (colourThreshold > rwdConsistent){
+              winCurr[i,t] = 1
+            }
+          } else if (rewardThreshold > rwdProbA) {
+            rwd[i,t] = 0
+        }
+        }
+      }
+      
+      
+          
+      # update reward for choice B
+      if (choice[i,t] == 2){
+        if (rewardThreshold < rwdProbB){
+          rwd[i,t] = 1
+          colourThreshold = runif(1)
+          if (BG[state] > BR[state]){
+            if (colourThreshold < rwdConsistent){
+              winCurr[i,t] = 2
+            } else if (colourThreshold > rwdConsistent){
+              winCurr[i,t] = 1
+            }
+          } else if (BG[state] < BR[state]){
+            if (colourThreshold < rwdConsistent){
+              winCurr[i,t] = 1
+            } else if (colourThreshold > rwdConsistent){
+              winCurr[i,t] = 2
+            }
+          } else if (rewardThreshold > rwdProbB) {
+            rwd[i,t] = 0
+        }
+        }
+      }
+      
+      ## learning phase
+      # update the value of the chosen option when a reward is received 
+      # m during learning set to 1
+      # counterfactual updating of unchosen
+      
+      
+      if (rwd[i,t] == 1){
+        pe[winCurr[i,t],choice[i,t]] = rwd[i,t] - Q[winCurr[i,t],choice[i,t]];
+        pe[winCurr[i,t],3-choice[i,t]] = 0.0 - Q[winCurr[i,t],3-choice[i,t]];
+        pe[3-winCurr[i,t],choice[i,t]] = 0.0 - Q[3-winCurr[i,t],choice[i,t]];
+       
+        q[winCurr[i,t],choice[i,t]] = 1 * (lr[i] * pe[winCurr[i,t],choice[i,t]]);
+        q[winCurr[i,t],3-choice[i,t]] = 1 * (lr[i] * pe[winCurr[i,t],3-choice[i,t]]);
+        q[3-winCurr[i,t],choice[i,t]] = 1 * (lr[i] * pe[3-winCurr[i,t],choice[i,t]]);
+       
+        Q[winCurr[i,t],choice[i,t]] = Q[winCurr[i,t],choice[i,t]] +             q[winCurr[i,t],choice[i,t]];
+        Q[winCurr[i,t],3-choice[i,t]] = Q[winCurr[i,t],3-choice[i,t]] + q[winCurr[i,t],3-choice[i,t]];
+        Q[3-winCurr[i,t],choice[i,t]] = Q[3-winCurr[i,t],choice[i,t]] + q[3-winCurr[i,t],choice[i,t]];
+      }
+      
+      # update value of the chosen option for both reward types when nothing is received 
+      if (rwd[i,t] == 0){
+        pe[,choice[i,t]] = rwd[i,t] - Q[,choice[i,t]];
+        q[,choice[i,t]] = lr[i] * pe[,choice[i,t]];
+        Q[,choice[i,t]] = Q[,choice[i,t]] + q[,choice[i,t]];
+      }
+      
+      # bound Q values between 0 and 1
+      for (j in 1:2){
+        for (k in 1:2){
+          if (Q[j,k] > 1){
+            Q[j,k] = 1
+            browser()
+        } else if (Q[j,k] < 0){
+          Q[j,k] = 0
+          browser()
+        }
+        }
+      }
+      
+      
+      ART[i,t] = Q[1,1]
+      AGT[i,t] = Q[2,1]
+      BRT[i,t] = Q[1,2]
+      BGT[i,t] = Q[2,2]
+      
+      chosenNet[i,t] = Q[1,choice[i,t]] + Q[2,choice[i,t]];
+      chosenDevalued[i,t] = (m[1]*Q[1,choice[i,t]]) + (m[2]*Q[2,choice[i,t]]);
+      chosenRed[i,t] = Q[1,choice[i,t]]
+      chosenGreen[i,t] = Q[2,choice[i,t]]
+      
+      ## update purses
+      if (winCurr[i,t] == 1){
+        purse[1] = purse[1] + 1
+      } else if (winCurr[i,t] == 2)
+        purse[2] = purse[2] + 1
+      
+      if (purse[1] == purseFull | purse[1] > purseFull){
+        purse[1] = purseFull
+        isPurseFull_1[i,t] = 1
+      }
+      
+      if (purse[2] == purseFull | purse[2] > purseFull){
+        purse[2] = purseFull
+        isPurseFull_2[i,t] = 1
+      }
+      
+      purse1T[i,t] = purse[1]
+      purse2T[i,t] = purse[2]
+      
+      ## move purse to bank? 
+      # bank when full? 
+      if (bankFull[state] == 3 && rwd[i,t] == 1){
+        if (purse[winCurr[i,t]] == purseFull){
+          purse[winCurr[i,t]] = 0
+          bank = bank + 5
+          isPurseFull_1[i,t] = 0
+          isPurseFull_2[i,t] = 0
+        }
+      }
+      if (bankFull[state] == 2){
+        if (purse[2] == purseFull){
+          purse[2] = 0
+          bank = bank + 5
+          isPurseFull_2[i,t] = 0
+        }
+      }
+      if (bankFull[state] == 1){
+        if (purse[1] == purseFull){
+          purse[1] = 0
+          bank = bank + 5
+          isPurseFull_1[i,t] = 0
+        }
+      }
+      
+      if (winCurr[i,t] > 0){
+        rwd_devalued[i,t] = rwd[i,t]*m[winCurr[i,t]]
+      } else {
+        rwd_devalued[i,t] = 0
+      }
+  }
+}
+
+```
+
+## oranise the data ##
+
+```{r}
+## organise data for behavioural analysis 
+# 1 column for each variable 
+
+data <- as.data.frame(choice) %>%
+  pivot_longer(everything()) %>%
+  rename(chosenDice = value)
+
+x <- as.data.frame(rwd) %>%
+  pivot_longer(everything()) %>%
+  rename(totalWin = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(stateT) %>%
+  pivot_longer(everything()) %>%
+  rename(state = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(MR) %>%
+  pivot_longer(everything()) %>%
+  rename(MR = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(MG) %>%
+  pivot_longer(everything()) %>%
+  rename(MG = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(VA) %>%
+  pivot_longer(everything()) %>%
+  rename(VA = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(VB) %>%
+  pivot_longer(everything()) %>%
+  rename(VB = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(chosenNet) %>%
+  pivot_longer(everything()) %>%
+  rename(chosenNet = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(chosenDevalued) %>%
+  pivot_longer(everything()) %>%
+  rename(chosenDevalued = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(rwd_devalued) %>%
+  pivot_longer(everything()) %>%
+  rename(rwd_devalued = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(winCurr) %>%
+  pivot_longer(everything()) %>%
+  rename(winCurrency = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(chosenRed) %>%
+  pivot_longer(everything()) %>%
+  rename(chosenRed = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(chosenGreen) %>%
+  pivot_longer(everything()) %>%
+  rename(chosenGreen = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(stateTimeT) %>%
+  pivot_longer(everything()) %>%
+  rename(stateTime = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(isPurseFull_1) %>%
+  pivot_longer(everything()) %>%
+  rename(isPurseFull_1 = value)
+
+data <- cbind(data,x)
+
+x <- as.data.frame(isPurseFull_2) %>%
+  pivot_longer(everything()) %>%
+  rename(isPurseFull_2 = value)
+
+data <- cbind(data,x)
+
+data <- data %>%
+  select(chosenDice,totalWin,state,stateTime,MR,MG,isPurseFull_1,isPurseFull_2,VA,VB,chosenNet,chosenDevalued,rwd_devalued, winCurrency, chosenRed, chosenGreen) %>%
+  mutate(vDiff = chosenNet - chosenDevalued)
+data['subject_nr'] <- rep(1:22, each = (nBlocks*NTr))
+data['allTrialIndex'] <- rep(1:(nBlocks*NTr), 22)
+
+write.csv(data,'raw_data/simulations/m5_simulated_data.csv')
+
+```
+
+
+
+### now stanify the data with the 'stanifying_data_directed_action.rmd ###
+# may need to adjust a few of the variables
+
+### then run the datalist through the 'running directed action.r' script ###
+# then come back to here
+
+
+read in the model summary and extract simulated parameters
+```{r}
+simulated_parameters <- read.csv('modelling/summaries/m5_simulated_summary.csv')
+simulated_lr = simulated_parameters[5:26,2]
+simulated_inv_tau = simulated_parameters[49:70,2]
+
+cor(lr,simulated_lr)
+cor(inv_tau,simulated_inv_tau)
+
+# plot the learning rates
+lr_plotting <- as.data.frame(cbind(lr,simulated_lr))
+
+lr_plot <- ggplot(lr_plotting, aes(x=lr,y=simulated_lr)) +
+  geom_point() +
+  geom_smooth(method=lm, se=FALSE) +
+  scale_y_continuous(limits = c(0.5,1), breaks = c(0.5,0.6,0.7,0.8,0.9,1.0)) +
+  scale_x_continuous(limits = c(0.5,1), breaks = c(0.5,0.6,0.7,0.8,0.9,1.0)) +
+  theme_classic() +
+  theme(legend.position = "none",
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14),
+        plot.title=element_text(size=14)) +
+  labs(title = "Parameter recovery, simulated and measured Learning rates (LR) - r=0.81*", x = "Measured LR", y = "Simulated LR")
+
+# plot the tau's
+inv_tau_plotting <- as.data.frame(cbind(inv_tau,simulated_inv_tau))
+
+inv_tau_plot <- ggplot(inv_tau_plotting, aes(x=inv_tau,y=simulated_inv_tau)) +
+  geom_point() +
+  geom_smooth(method=lm, se=FALSE) +
+  scale_y_continuous(limits = c(0,6), breaks = c(0,1,2,3,4,5,6)) +
+  scale_x_continuous(limits = c(0,6), breaks = c(0,1,2,3,4,5)) +
+  theme_classic() +
+  theme(legend.position = "none",
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14),
+        plot.title=element_text(size=14)) +
+  labs(title = "Parameter recovery, simulated and measured inverse temperatures - r=0.97*", x = "Measured inverse temperature", y = "Simulated inverse temperature")
+```
+
+
+

@@ -1,0 +1,330 @@
+---
+title: "make_text_files"
+author: "rb"
+date: "21/02/2022"
+output: html_document
+---
+
+load our libraries 
+```{r}
+library(tidyverse)
+library(wesanderson)
+library(gridExtra)
+library(ggpubr)
+library(stringr)
+source('scripts/reverseFromZero.R')
+```
+
+make lists for file storage
+
+```{r}
+for (i in 1:22){
+    nr <- c('01','02','03','04','05','06','07','08','09','10','11','12','13','14','15','16','17','18','19','20','21','22')
+    
+    file1 <- str_replace_all("raw_data/main/sub_01/raw1_01.csv",'01',nr[i])
+    file2 <- str_replace_all("raw_data/main/sub_01/raw2_01.csv",'01',nr[i])
+    
+    trial1 <- str_replace_all('text_files/sub_01/run_1/trial_no_1.txt','01',nr[i])
+    trial2 <- str_replace_all('text_files/sub_01/run_2/trial_no_2.txt','01',nr[i])
+    
+    reward1 <- str_replace_all('text_files/sub_01/run_1/reward_1.txt','01',nr[i])
+    reward2 <- str_replace_all('text_files/sub_01/run_2/reward_2.txt','01',nr[i])
+    
+    ev1 <- str_replace_all('text_files/sub_01/run_1/chosen_ev_1.txt','01',nr[i])
+    ev2 <- str_replace_all('text_files/sub_01/run_2/chosen_ev_2.txt','01',nr[i])
+    
+    colour1 <- str_replace_all('text_files/sub_01/run_1/colour_1.txt','01',nr[i])
+    colour2 <- str_replace_all('text_files/sub_01/run_2/colour_2.txt','01',nr[i])
+    
+    chosen_diff1 <- str_replace_all('text_files/sub_01/run_1/chosen_diff_1.txt','01',nr[i])
+    chosen_diff2 <- str_replace_all('text_files/sub_01/run_2/chosen_diff_2.txt','01',nr[i])
+    
+    unchosen_diff1 <- str_replace_all('text_files/sub_01/run_1/unchosen_diff_1.txt','01',nr[i])
+    unchosen_diff2 <- str_replace_all('text_files/sub_01/run_2/unchosen_diff_2.txt','01',nr[i])
+    
+    reward_diff1 <- str_replace_all('text_files/sub_01/run_1/reward_diff_1.txt','01',nr[i])
+    reward_diff2 <- str_replace_all('text_files/sub_01/run_2/reward_diff_2.txt','01',nr[i])
+    
+    motivation1 <- str_replace_all('text_files/sub_01/run_1/motivation_1.txt','01',nr[i])
+    motivation2 <- str_replace_all('text_files/sub_01/run_2/motivation_2.txt','01',nr[i])
+    
+    red1 <- str_replace_all('text_files/sub_01/run_1/red_1.txt','01',nr[i])
+    red2 <- str_replace_all('text_files/sub_01/run_2/red_2.txt','01',nr[i])
+    
+    green1 <- str_replace_all('text_files/sub_01/run_1/green_1.txt','01',nr[i])
+    green2 <- str_replace_all('text_files/sub_01/run_2/green_2.txt','01',nr[i])
+    
+    right1 <- str_replace_all('text_files/sub_01/run_1/right_1.txt','01',nr[i])
+    right2 <- str_replace_all('text_files/sub_01/run_2/right_2.txt','01',nr[i])
+    
+    left1 <- str_replace_all('text_files/sub_01/run_1/left_1.txt','01',nr[i])
+    left2 <- str_replace_all('text_files/sub_01/run_2/left_2.txt','01',nr[i])
+    
+    model_indexes1 = c(1,501,1001,1501,2001,2501,3001,3501,4001,4501,5001,5501,6001,6501,7001,7501,8001,8501,9001,9501,10001,10501)
+    model_indexes2 = c(201,750,1250,1750,2248,2750,3230,3751,4250,4751,5250,5751,6247,6749,7245,7750,8251,8751,9251,9751,10249,10748)
+    
+    # now lets read in the data
+    
+    # first do run 1 then run 2
+    for (r in 1:2){
+      
+        if(r==1){
+          file=file1
+        } else {
+          file=file2
+        }
+        
+        data <- read.csv(file) %>%
+          filter(!chosenDice == Inf)
+        chosen_net_model <- read.csv('modelling/summaries/full_model_online_chosen_net.csv')
+        chosen_devalued_model <- read.csv('modelling/summaries/chosen_devalued.csv')
+        colour_diff_model <- read.csv('modelling/summaries/colour_diff.csv')
+        chosen_diff_model <- read.csv('modelling/summaries/full_model_online_chosen_diff.csv')
+        unchosen_diff_model <- read.csv('modelling/summaries/unchosen_diff.csv')
+        
+        
+        ### now start getting metrics we need for fMRI analysis
+        N <- length(data$allTrialIndex)-1 # -1 as 0 = 1 on this index
+        if(r==1){
+          M <- model_indexes1[i] # what index should we start with on the modeled values
+        } else {
+          M <- model_indexes2[i] # take from modeled values 2 if doing run 2
+        }
+        
+        # reward received (objective)
+        rwd_obb <- data$totalWin
+        
+        # reward received after devaluation (subjective), combines subjective winnings of both purses
+        rwd_sub <- data$allowedWinnings_1 + data$allowedWinnings_2
+        
+        # difference between subjective and objective reward
+        rwd_diff <- rwd_obb - rwd_sub
+        
+        # motivation, is either purse full
+        motivation <- data$isPurseFull_1+data$isPurseFull_2
+        
+        # red
+        red <- data$winnings_1
+        
+        # green
+        green <- data$winnings_2
+        
+        # trial number
+        trial_no <- rep(1,N+1)
+        
+        # start of scan 
+        start = data$startScan[1]
+        
+        # time at decision
+        t_decision <- data$endDice-start
+        
+        # time at reward
+        t_rwd <- data$startReward-start
+        
+        # time at start of trial
+        t_trial_start <- data$startDice-start
+        
+        # right responses 
+        right <- as.integer(data$chosenDiceLocation==2)
+        
+        # left responses 
+        left <- as.integer(data$chosenDiceLocation==1)
+        
+        # chosen net expected value objective - subjective
+        chosen_diff <- chosen_diff_model[M:(M+N),2]
+        chosen_diff[is.na(chosen_diff)] <- 0
+        
+        # chosen net expected value objective - subjective
+        unchosen_diff <- unchosen_diff_model[M:(M+N),2]
+        unchosen_diff[is.na(unchosen_diff)] <- 0
+        
+        # chosen red expected value - chosen green expected value
+        colour_diff <- colour_diff_model[M:(M+N),2]
+        colour_diff[is.na(colour_diff)] <- 0
+        
+        # net chosen expected value
+        chosen_EV <- chosen_net_model[M:(M+N),2]
+        chosen_EV[is.na(chosen_EV)] <- 0
+        
+        
+        ### now make the text files in 3 column format
+        
+        # trial number
+        if (r==1){
+          trial_file = trial1
+        } else {
+          trial_file = trial2
+        }
+        
+        trial_no_text <- as.data.frame(cbind(trial_no,t_decision))
+        trial_no_text['zeros'] <- 0
+        trial_no_text <- trial_no_text %>%
+          select(t_decision,zeros,trial_no)
+        
+        write.table(trial_no_text, file=trial_file,sep="\t", row.names=FALSE,col.names=FALSE)
+        
+        # objective reward received
+        if (r==1){
+          reward_file = reward1
+        } else {
+          reward_file = reward2
+        }
+        
+        rwd_obb_text <- as.data.frame(cbind(rwd_obb,t_rwd))
+        rwd_obb_text['zeros'] <- 0
+        rwd_obb_text <- rwd_obb_text %>%
+          select(t_rwd,zeros,rwd_obb)
+        
+        write.table(rwd_obb_text, file=reward_file ,sep="\t", row.names=FALSE,col.names=FALSE)
+        
+        # net chosen EV
+        if (r==1){
+          ev_file = ev1
+        } else {
+          ev_file = ev2
+        }
+        
+        chosen_EV_text <- as.data.frame(cbind(chosen_EV,t_decision))
+        chosen_EV_text['zeros'] <- 0
+        chosen_EV_text <- chosen_EV_text %>%
+          select(t_decision,zeros,chosen_EV)
+        
+        write.table(chosen_EV_text, file=ev_file ,sep="\t", row.names=FALSE,col.names=FALSE)
+        
+        # difference between chosen red EV and chosen green EV
+        
+        if (r==1){
+          colour_file = colour1
+        } else {
+          colour_file = colour2
+        }
+        
+        colour_diff_text <- as.data.frame(cbind(colour_diff,t_decision))
+        colour_diff_text['zeros'] <- 0
+        colour_diff_text <- colour_diff_text %>%
+          select(t_decision,zeros,colour_diff)
+        
+        write.table(colour_diff_text, file=colour_file ,sep="\t", row.names=FALSE,col.names=FALSE)
+        
+        # objective EV - subjective EV
+        
+        if (r==1){
+          chosen_diff_file = chosen_diff1
+        } else {
+          chosen_diff_file = chosen_diff2
+        }
+        
+        chosen_diff_text <- as.data.frame(cbind(chosen_diff,t_decision))
+        chosen_diff_text['zeros'] <- 0
+        chosen_diff_text <- chosen_diff_text %>%
+          select(t_decision,zeros,chosen_diff)
+        
+        write.table(chosen_diff_text, file=chosen_diff_file ,sep="\t", row.names=FALSE,col.names=FALSE)
+        
+        # objective EV - subjective EV for the unchosen option
+        
+        if (r==1){
+          unchosen_diff_file = unchosen_diff1
+        } else {
+          unchosen_diff_file = unchosen_diff2
+        }
+        
+        unchosen_diff_text <- as.data.frame(cbind(unchosen_diff,t_decision))
+        unchosen_diff_text['zeros'] <- 0
+        unchosen_diff_text <- unchosen_diff_text %>%
+          select(t_decision,zeros,unchosen_diff)
+        
+        write.table(unchosen_diff_text, file=unchosen_diff_file ,sep="\t", row.names=FALSE,col.names=FALSE)
+        
+        # objective rwd - subjective reward
+        
+        if (r==1){
+          reward_diff_file = reward_diff1
+        } else {
+          reward_diff_file = reward_diff2
+        }
+        
+        rwd_diff_text <- as.data.frame(cbind(rwd_diff,t_rwd))
+        rwd_diff_text['zeros'] <- 0
+        rwd_diff_text <- rwd_diff_text %>%
+          select(t_rwd,zeros,rwd_diff)
+        
+        write.table(rwd_diff_text, file=reward_diff_file,sep="\t", row.names=FALSE,col.names=FALSE)
+        
+        # motivation
+        
+        if (r==1){
+          motivation_file = motivation1
+        } else {
+          motivation_file = motivation2
+        }
+        
+        m_text <- as.data.frame(cbind(motivation,t_decision))
+        m_text['zeros'] <- 0
+        m_text <- m_text %>%
+          select(t_decision,zeros,motivation)
+        
+        write.table(m_text, file=motivation_file,sep="\t", row.names=FALSE,col.names=FALSE)
+        
+        # red rewards
+        
+        if (r==1){
+          red_file = red1
+        } else {
+          red_file = red2
+        }
+        
+        red_text <- as.data.frame(cbind(red,t_rwd))
+        red_text['zeros'] <- 0
+        red_text <- red_text %>%
+          select(t_rwd,zeros,red)
+        
+        write.table(red_text, file=red_file,sep="\t", row.names=FALSE,col.names=FALSE)
+        
+        # green rewards
+        
+        if (r==1){
+          green_file = green1
+        } else {
+          green_file = green2
+        }
+        
+        green_text <- as.data.frame(cbind(green,t_rwd))
+        green_text['zeros'] <- 0
+        green_text <- green_text %>%
+          select(t_rwd,zeros,green)
+        
+        write.table(green_text, file=green_file,sep="\t", row.names=FALSE,col.names=FALSE)
+        
+        if (r==1){
+          right_file = right1
+        } else {
+          right_file = right2
+        }
+        
+        right_text <- as.data.frame(cbind(right,t_decision))
+        right_text['zeros'] <- 0
+        right_text <- right_text %>%
+          select(t_decision,zeros,right)
+        
+        write.table(right_text, file=right_file,sep='\t', row.names=FALSE,col.names=FALSE)
+        
+        if (r==1){
+          left_file = left1
+        } else {
+          left_file = left2
+        }
+        
+        left_text <- as.data.frame(cbind(left,t_decision))
+        left_text['zeros'] <- 0
+        left_text <- left_text %>%
+          select(t_decision,zeros,left)
+        
+        write.table(left_text, file=left_file,sep='\t', row.names=FALSE,col.names=FALSE)
+        
+    }
+}
+
+```
+
+

@@ -1,0 +1,540 @@
+---
+title: "regressor_plots"
+author: "RB"
+date: '2022-08-09'
+output: html_document
+---
+
+### loading the packages ###
+
+```{r}
+library(tidyverse)
+library(wesanderson)
+library(gridExtra)
+library(ggpubr)
+library(RColorBrewer)
+library(viridis)
+source('reverseFromZero.R')
+```
+
+### loading the data ###
+ 
+```{r}
+# list of subject numbers in strings
+nr_s <- c('02','03','04','05','06','07','08','09','10','11','12','13','14','15','16','17','18','19','20','21','22')
+
+# read in first data file
+a <- read.csv("raw_data/main/sub_02/raw1_02.csv") %>%
+  select(!contains("fives")) 
+a['subject_nr'] <- nr_s[1]
+b <- read.csv("raw_data/main/sub_02/raw2_02.csv") %>%
+  select(!contains("fives"))
+b['subject_nr'] <- nr_s[1]
+
+data <- rbind(a,b)
+
+# loop through the remaining files and bind to data 
+for (i in 2:21){
+file_1 <- str_replace_all("raw_data/main/sub_02/raw1_02.csv",'02',nr_s[i])
+file_2 <- str_replace_all("raw_data/main/sub_02/raw2_02.csv",'02',nr_s[i])
+
+a <- read.csv(file_1) %>%
+  select(!contains("fives"))
+a['subject_nr'] <- nr_s[i]
+b <- read.csv(file_2) %>%
+  select(!contains("fives"))
+b['subject_nr'] <- nr_s[i]
+
+data <- rbind(data,a,b) 
+}
+
+data <- data %>%
+  rowid_to_column() %>%
+  filter(!chosenDice==Inf)
+```
+
+### preprocessing ###
+
+```{r}
+data['stateName'] <- 'none'
+
+for (i in data$rowid){
+  if (data[i,]$state == 3 | data[i,]$state == 8 | data[i,]$state == 12 | data[i,]$state == 18){
+    data[i,]$stateName = 'fill'
+  } else if (data[i,]$state == 4 | data[i,]$state == 9 | data[i,]$state == 13 | data[i,]$state ==       19){
+    data[i,]$stateName = 'extinction'
+  } else if (data[i,]$state == 5 | data[i,]$state == 10 | data[i,]$state == 14 | data[i,]$state ==      20){
+    data[i,]$stateName = 'reinstatement'
+  } else if (data[i,]$state == 6 | data[i,]$state == 11 | data[i,]$state == 16 | data[i,]$state ==      21){
+    data[i,]$stateName = 'post'
+  } else if (data[i,]$state == 15){
+    data[i,]$stateName = 'switch'
+  }
+}
+
+model_indexes1 = c(1,501,1001,1501,2001,2501,3001,3501,4001,4501,5001,5501,6001,6501,7001,7501,8001,8501,9001,9501,10001,10501)
+
+## load up the modeled values
+
+# chosen_net
+
+chosen_net <- read.csv('modelling/summaries/m5_chosen_net.csv') %>%
+  rename(chosen_net=mean) %>%
+  select(chosen_net) %>%
+  filter(!is.na(.))
+
+chosen_net <- chosen_net[401:10757,]
+
+# chosen_diff
+
+chosen_diff <- read.csv('modelling/summaries/m5_chosen_diff.csv') %>%
+  rename(chosen_diff=mean) %>%
+  select(chosen_diff) %>%
+  rowid_to_column()
+
+for (i in 1:22){
+  chosen_diff[model_indexes1[i],2] = 0
+}
+
+chosen_diff <- chosen_diff %>%
+  select(chosen_diff) %>%
+  filter(!is.na(.))
+
+chosen_diff <- chosen_diff[401:10757,]
+
+# bind the modeled values on to the data 
+ 
+data <- cbind(data,chosen_net,chosen_diff) 
+  
+# set up the adapted trial number for the fill states
+fill <- data %>%
+  filter(stateName == 'fill') %>%
+  select(stateTime) %>%
+  rename(trialNr = stateTime)
+
+adaptedTrialNr <- reverseFromZero(fill)
+
+fill <- data %>%
+  filter(stateName == 'fill') %>%
+  select(subject_nr,state,stateName,stateTime,totalWin,allowedWinnings_1,allowedWinnings_2,chosen_net,chosen_diff,isPurseFull_1,isPurseFull_2) %>%
+  mutate(allowedWinnings = allowedWinnings_1 + allowedWinnings_2) %>%
+  mutate(devaluedWin = totalWin - allowedWinnings) %>%
+  mutate(motivation = isPurseFull_1+isPurseFull_2)
+
+fill['adaptedTrialNumber'] <- adaptedTrialNr
+
+# now set up the extinction states
+extinction <- data %>%
+  filter(stateName == 'extinction') %>%
+  select(subject_nr,state,stateName,stateTime,totalWin,allowedWinnings_1,allowedWinnings_2,chosen_net,chosen_diff,isPurseFull_1,isPurseFull_2) %>%
+  mutate(allowedWinnings = allowedWinnings_1 + allowedWinnings_2) %>%
+  mutate(devaluedWin = totalWin - allowedWinnings) %>%
+  mutate(motivation = isPurseFull_1+isPurseFull_2) %>%
+  mutate(adaptedTrialNumber = stateTime - 1) # first trial of extinction set to 0
+
+# now set up the reinstatement states
+reinstatement <- data %>%
+  filter(stateName == 'reinstatement') %>%
+  select(subject_nr,state,stateName,stateTime,totalWin,allowedWinnings_1,allowedWinnings_2,chosen_net,chosen_diff,isPurseFull_1,isPurseFull_2) %>%
+  mutate(allowedWinnings = allowedWinnings_1 + allowedWinnings_2) %>%
+  mutate(devaluedWin = totalWin - allowedWinnings) %>%
+  mutate(motivation = isPurseFull_1+isPurseFull_2) %>%
+  mutate(adaptedTrialNumber = stateTime + 7) # first trial of extinction set to 0
+
+# now reinstatement reversed so we can start purse full from 0
+reinstatement_reverse <- data %>%
+  filter(stateName == 'reinstatement') %>%
+  select(stateTime) %>%
+  rename(trialNr = stateTime)
+
+adaptedTrialNr <- reverseFromZero(reinstatement_reverse)
+
+reinstatement_reverse <- data %>%
+  filter(stateName == 'reinstatement') %>%
+  select(subject_nr,state,stateName,stateTime,totalWin,allowedWinnings_1,allowedWinnings_2,chosen_net,chosen_diff,isPurseFull_1,isPurseFull_2) %>%
+  mutate(allowedWinnings = allowedWinnings_1 + allowedWinnings_2) %>%
+  mutate(devaluedWin = totalWin - allowedWinnings) %>%
+  mutate(motivation = isPurseFull_1+isPurseFull_2) %>%
+  mutate(devaluedWin = totalWin - allowedWinnings)
+
+reinstatement_reverse['adaptedTrialNumber'] <- adaptedTrialNr
+
+# switch
+
+switch <- data %>%
+  filter(stateName == 'switch') %>%
+  select(subject_nr,state,stateName,stateTime,totalWin,allowedWinnings_1,allowedWinnings_2,chosen_net,chosen_diff,isPurseFull_1,isPurseFull_2) %>%
+  mutate(allowedWinnings = allowedWinnings_1 + allowedWinnings_2) %>%
+  mutate(devaluedWin = totalWin - allowedWinnings) %>%
+  mutate(motivation = isPurseFull_1+isPurseFull_2) %>%
+  mutate(adaptedTrialNumber = stateTime + 27) # first trial of extinction set to 0
+
+# now finish off with purse full from zero 
+post <- data %>%
+  filter(stateName == 'post') %>%
+  select(subject_nr,state,stateName,stateTime,totalWin,allowedWinnings_1,allowedWinnings_2,chosen_net,chosen_diff,isPurseFull_1,isPurseFull_2) %>%
+  mutate(allowedWinnings = allowedWinnings_1 + allowedWinnings_2) %>%
+  mutate(devaluedWin = totalWin - allowedWinnings) %>%
+  mutate(motivation = isPurseFull_1+isPurseFull_2) %>%
+  mutate(adaptedTrialNumber = stateTime - 1)
+
+```
+
+### plotting ###
+
+```{r}
+sub = '06'
+
+fill_1 <- fill %>%
+  filter(subject_nr==sub) %>%
+  filter(state==18) %>%
+  rowid_to_column() %>%
+  filter(rowid<10) %>%
+  filter(adaptedTrialNumber > -5)
+
+extinction_1 <- extinction %>%
+  filter(subject_nr==sub) %>%
+  filter(state == 19) %>%
+  rowid_to_column() %>%
+  filter(rowid<9)
+
+reinstatement_1 <- reinstatement %>%
+  filter(subject_nr==sub) %>%
+  filter(state == 20) %>%
+  rowid_to_column() %>%
+  filter(rowid<9)
+
+rwd_df1 <- rbind(fill_1,extinction_1,reinstatement_1) %>%
+  distinct(stateName,adaptedTrialNumber,totalWin) %>%
+  rename(value = totalWin)
+rwd_df1['type'] <- 'Reward'
+
+rwd_df2 <- rbind(fill_1,extinction_1,reinstatement_1) %>%
+  distinct(stateName,adaptedTrialNumber,devaluedWin) %>%
+  rename(value = devaluedWin)
+rwd_df2['type'] <- 'Devalued reward'
+
+rwd_df <- rbind(rwd_df1,rwd_df2) %>%
+  group_by(type)
+
+rwd_plot1 <- ggplot(rwd_df, aes(x=adaptedTrialNumber, y=value, group=type, colour=type)) +
+  geom_line(size=2) + 
+  scale_color_brewer(palette = "Set1") +
+  geom_vline(xintercept = c(0,8), linetype = "dotted") +
+  geom_vline(xintercept = c(15), linetype = "dashed", size = 1) +
+  scale_y_continuous(limits = c(0,1.2), breaks = c(0,1.0)) +
+  scale_x_continuous(limits = c(-4,15), breaks = c(-4:15)) +
+  theme_classic() +
+  theme(legend.position = "none",
+        axis.title = element_text(size=14),
+        plot.title = element_text(size=16),
+        axis.text = element_text(size=14)) +
+  labs(title = "Reward regressors over trials", x = "Trial number", y = "Reward value") +
+  annotate(
+    "text", label = "extinction",
+    x = 2, y = 1.1, size = 5, colour = "black"
+  ) +
+  annotate(
+    "text", label = "reinstatement",
+    x = 10, y = 1.1, size = 5, colour = "black"
+  )
+
+## plot 2
+
+reinstatement_reverse_1 <- reinstatement_reverse %>%
+  filter(subject_nr==sub) %>%
+  filter(state == 20) %>%
+  rowid_to_column() %>%
+  filter(rowid < 21) %>%
+  filter(adaptedTrialNumber > -11)
+
+post_1 <- post %>%
+  filter(subject_nr==sub) %>%
+  filter(state == 21) %>%
+  rowid_to_column() %>% 
+  filter(rowid < 5)
+  
+rwd_df3 <- rbind(reinstatement_reverse_1,post_1) %>%
+  distinct(stateName,adaptedTrialNumber,totalWin) %>%
+  rename(value = totalWin)
+rwd_df3['type'] <- 'Reward'
+
+rwd_df4 <- rbind(reinstatement_reverse_1,post_1) %>%
+  distinct(stateName,adaptedTrialNumber,devaluedWin) %>%
+  rename(value = devaluedWin)
+rwd_df4['type'] <- 'Devalued reward'
+
+rwd_df_5 <- rbind(rwd_df3,rwd_df4) %>%
+  group_by(type)
+
+rwd_plot2 <- ggplot(rwd_df_5, aes(x=adaptedTrialNumber, y=value, group=type, colour=type)) +
+  geom_line(size=2) + 
+  scale_color_brewer(palette = "Set1") +
+  geom_vline(xintercept = c(0), linetype = "dotted") +
+  geom_vline(xintercept = c(-10), linetype = "dashed", size = 1) +
+  scale_y_continuous(limits = c(0,1.2), breaks = c(0,1.0)) +
+  scale_x_continuous(limits = c(-10,3), breaks = c(-10:3)) +
+  theme_classic() +
+  theme(axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title = element_text(size=14),
+        plot.title = element_text(size=16),
+        legend.key.size = unit(2,'cm'),
+        legend.text = element_text(size=14),
+        axis.text.x = element_text(size=14),
+        legend.title = element_text(size=14)) +
+  labs(title= "", x = "Trial number", y = "Value") +
+  annotate(
+    "text", label = "reinstatement",
+    x = -8, y = 1.1, size = 5, colour = "black"
+  ) +
+  annotate(
+    "text", label = "post",
+    x = 1, y = 1.1, size = 5, colour = "black"
+  )
+
+grid.arrange(rwd_plot1,rwd_plot2,ncol=2)
+```
+
+```{r}
+ev_df1 <- rbind(fill_1,extinction_1,reinstatement_1) %>%
+  distinct(stateName,adaptedTrialNumber,chosen_net) %>%
+  rename(value = chosen_net)
+ev_df1['type'] <- 'Net chosen EV'
+
+ev_df2 <- rbind(fill_1,extinction_1,reinstatement_1) %>%
+  distinct(stateName,adaptedTrialNumber,chosen_diff) %>%
+  rename(value = chosen_diff)
+ev_df2['type'] <- 'Chosen option devaluation'
+
+ev_df7 <- rbind(fill_1,extinction_1,reinstatement_1) %>%
+  distinct(stateName,adaptedTrialNumber,motivation) %>%
+  rename(value = motivation)
+ev_df7['type'] <- 'Motivation'
+
+ev_df <- rbind(ev_df1,ev_df2,ev_df7) %>%
+  group_by(type)
+
+ev_plot1 <- ggplot(ev_df, aes(x=adaptedTrialNumber, y=value, group=type, colour=type)) +
+  geom_line(size=2) + 
+  scale_color_brewer(palette = "Set1") +
+  geom_vline(xintercept = c(0,8), linetype = "dotted") +
+  geom_vline(xintercept = c(15), linetype = "dashed", size = 1) +
+  scale_y_continuous(limits = c(0,1.2), breaks = c(0,1.0)) +
+  scale_x_continuous(limits = c(-4,15), breaks = c(-4:15)) +
+  theme_classic() +
+  theme(legend.position = "none",
+        axis.title = element_text(size=14),
+        plot.title = element_text(size=16),
+        axis.text = element_text(size=14)) +
+  labs(title = "EV regressors over trials", x = "Trial number", y = "Reward value") +
+  annotate(
+    "text", label = "extinction",
+    x = 2, y = 1.1, size = 5, colour = "black"
+  ) +
+  annotate(
+    "text", label = "reinstatement",
+    x = 10, y = 1.1, size = 5, colour = "black"
+  )
+
+ev_df3 <- rbind(reinstatement_reverse_1,post_1) %>%
+  distinct(stateName,adaptedTrialNumber,chosen_net) %>%
+  rename(value = chosen_net)
+ev_df3['type'] <- 'Net chosen EV'
+
+ev_df4 <- rbind(reinstatement_reverse_1,post_1) %>%
+  distinct(stateName,adaptedTrialNumber,chosen_diff) %>%
+  rename(value = chosen_diff)
+ev_df4['type'] <- 'Chosen option devaluation'
+
+ev_df6 <- rbind(reinstatement_reverse_1,post_1) %>%
+  distinct(stateName,adaptedTrialNumber,motivation) %>%
+  rename(value = motivation)
+ev_df6['type'] <- 'Motivation'
+
+ev_df_5 <- rbind(ev_df3,ev_df4,ev_df6) %>%
+  group_by(type)
+
+ev_plot2 <- ggplot(ev_df_5, aes(x=adaptedTrialNumber, y=value, group=type, colour=type)) +
+  geom_line(size=2) + 
+  scale_color_brewer(palette = "Set1") +
+  geom_vline(xintercept = c(0), linetype = "dotted") +
+  geom_vline(xintercept = c(-10), linetype = "dashed", size = 1) +
+  scale_y_continuous(limits = c(0,1.2), breaks = c(0,1.0)) +
+  scale_x_continuous(limits = c(-10,3), breaks = c(-10:3)) +
+  theme_classic() +
+  theme(axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.title = element_text(size=14),
+        plot.title = element_text(size=16),
+        legend.key.size = unit(2,'cm'),
+        legend.text = element_text(size=14),
+        axis.text.x = element_text(size=14),
+        legend.title = element_text(size=14)) +
+  labs(title= "", x = "Trial number", y = "Value") +
+  annotate(
+    "text", label = "reinstatement",
+    x = -6, y = 1.1, size = 5, colour = "black"
+  ) +
+  annotate(
+    "text", label = "post",
+    x = 1, y = 1.1, size = 5, colour = "black"
+  )
+
+grid.arrange(ev_plot1,ev_plot2,ncol=2)
+```
+
+Heatmap same plot
+```{r}
+
+fill_1 <- fill %>%
+  filter(stateName=='fill') %>%
+  filter(adaptedTrialNumber > -5) %>%
+  group_by(adaptedTrialNumber) %>%
+  mutate(meanRwd=mean(totalWin)) %>%
+  mutate(meanChosenEV=mean(chosen_net)) %>%
+  mutate(meanChosenDiff=mean(chosen_diff)) %>%
+  mutate(meanDevRwd=mean(devaluedWin)) %>%
+  mutate(meanMotivation=mean(motivation)) %>%
+  distinct(adaptedTrialNumber,meanRwd,meanChosenEV,meanChosenDiff,meanDevRwd,meanMotivation)
+
+extinction_1 <- extinction %>%
+  filter(stateName == 'extinction') %>%
+  group_by(adaptedTrialNumber) %>%
+  mutate(meanRwd=mean(totalWin)) %>%
+  mutate(meanChosenEV=mean(chosen_net)) %>%
+  mutate(meanChosenDiff=mean(chosen_diff)) %>%
+  mutate(meanDevRwd=mean(devaluedWin)) %>%
+  mutate(meanMotivation=mean(motivation)) %>%
+  distinct(adaptedTrialNumber,meanRwd,meanChosenEV,meanChosenDiff,meanDevRwd,meanMotivation)
+
+reinstatement_1 <- reinstatement %>%
+  filter(stateName == 'reinstatement') %>%
+  group_by(adaptedTrialNumber) %>%
+  mutate(meanRwd=mean(totalWin)) %>%
+  mutate(meanChosenEV=mean(chosen_net)) %>%
+  mutate(meanChosenDiff=mean(chosen_diff)) %>%
+  mutate(meanDevRwd=mean(devaluedWin)) %>%
+  mutate(meanMotivation=mean(motivation)) %>%
+  distinct(adaptedTrialNumber,meanRwd,meanChosenEV,meanChosenDiff,meanDevRwd,meanMotivation) 
+
+switch_1 <- switch %>%
+  filter(stateName == 'switch') %>%
+  group_by(adaptedTrialNumber) %>%
+  mutate(meanRwd=mean(totalWin)) %>%
+  mutate(meanChosenEV=mean(chosen_net)) %>%
+  mutate(meanChosenDiff=mean(chosen_diff)) %>%
+  mutate(meanDevRwd=mean(devaluedWin)) %>%
+  mutate(meanMotivation=mean(motivation)) %>%
+  distinct(adaptedTrialNumber,meanRwd,meanChosenEV,meanChosenDiff,meanDevRwd,meanMotivation) 
+
+post_1 <- post %>%
+  filter(stateName == 'post') %>%
+  group_by(adaptedTrialNumber) %>%
+  mutate(meanRwd=mean(totalWin)) %>%
+  mutate(meanChosenEV=mean(chosen_net)) %>%
+  mutate(meanChosenDiff=mean(chosen_diff)) %>%
+  mutate(meanDevRwd=mean(devaluedWin)) %>%
+  mutate(meanMotivation=mean(motivation)) %>%
+  distinct(adaptedTrialNumber,meanRwd,meanChosenEV,meanChosenDiff,meanDevRwd,meanMotivation) %>%
+  mutate(adaptedTrialNumber=adaptedTrialNumber+48)
+
+# create reward regressor data frame
+meanRwd <- c(fill_1$meanRwd,extinction_1$meanRwd,reinstatement_1$meanRwd,switch_1$meanRwd,post_1$meanRwd)
+meanRwd <- as.data.frame(meanRwd) %>%
+  rename(val=meanRwd) %>%
+  rowid_to_column() %>%
+  mutate(Trial_Nr=rowid-1)
+meanRwd['reg'] <- 'Reward'
+
+# ev regressor
+meanChosenEV <- c(fill_1$meanChosenEV,extinction_1$meanChosenEV,reinstatement_1$meanChosenEV,switch_1$meanChosenEV,post_1$meanChosenEV)
+meanChosenEV <- as.data.frame(meanChosenEV) %>%
+  rename(val=meanChosenEV) %>%
+  rowid_to_column() %>%
+  mutate(Trial_Nr=rowid-1)
+meanChosenEV['reg'] <- 'chosen EV'
+
+# devalued reward
+meanDevRwd <- c(fill_1$meanDevRwd,extinction_1$meanDevRwd,reinstatement_1$meanDevRwd,switch_1$meanDevRwd,post_1$meanDevRwd)
+meanDevRwd <- as.data.frame(meanDevRwd) %>%
+  rename(val=meanDevRwd) %>%
+  rowid_to_column() %>%
+  mutate(Trial_Nr=rowid-1)
+meanDevRwd['reg'] <- 'Reward devaluation'
+
+# EV devaluation
+meanChosenDiff <- c(fill_1$meanChosenDiff,extinction_1$meanChosenDiff,reinstatement_1$meanChosenDiff,switch_1$meanChosenDiff,post_1$meanChosenDiff)
+meanChosenDiff <- as.data.frame(meanChosenDiff) %>%
+  rename(val=meanChosenDiff) %>%
+  rowid_to_column() %>%
+  mutate(Trial_Nr=rowid-1)
+meanChosenDiff['reg'] <- 'EV devaluation'
+
+# Motivation
+meanMotivation <- c(fill_1$meanMotivation,extinction_1$meanMotivation,reinstatement_1$meanMotivation,switch_1$meanMotivation,post_1$meanMotivation)
+meanMotivation <- as.data.frame(meanMotivation) %>%
+  rename(val=meanMotivation) %>%
+  rowid_to_column() %>%
+  mutate(Trial_Nr=rowid-1)
+meanMotivation['reg'] <- 'Motivation'
+
+# trials, just take one of the other tables and change values to 1
+meanTrials <- meanMotivation %>%
+  mutate(val=1) %>%
+  mutate(reg='Trials')
+
+
+tmp_heatmap <- rbind(meanTrials,meanRwd,meanChosenEV,meanDevRwd,meanChosenDiff,meanMotivation)
+
+reg_heatmap <- ggplot(tmp_heatmap, aes(x=Trial_Nr,y=reg,fill=val)) +
+  geom_tile(colour = "grey50") +
+  geom_vline(xintercept = c(3.5), linetype = "dashed", size = 1, color='black') +
+  geom_vline(xintercept = c(11.5), linetype = "dashed", size = 1, color='black') +
+  geom_vline(xintercept = c(32.5), linetype = "dashed", size = 1, color='black') +
+  geom_vline(xintercept = c(51.5), linetype = "dashed", size = 1, color='black') +
+  scale_fill_gradient('Value',low = "red", high = "white",)+
+  labs(title='Regressor value heatmap',x='Trial Number',y='Regressor') + 
+  annotate(
+    "text", label = "F",
+    x = 1.5, y = 6.4, size = 4, colour = "red", fontface=2
+  ) +
+  annotate(
+    "text", label = "EX",
+    x = 8, y = 6.4, size = 4, colour = "red", fontface=2
+  ) +
+  annotate(
+    "text", label = "R",
+    x = 22, y = 6.4, size = 4, colour = "red", fontface=2
+  ) +
+  annotate(
+    "text", label = "S",
+    x = 42, y = 6.4, size = 4, colour = "red", fontface=2
+  ) +
+  annotate(
+    "text", label = "EM",
+    x = 54, y = 6.4, size = 4, colour = "red", fontface=2
+  ) +
+  theme_classic() +
+  theme(
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=18),
+        plot.title=element_text(size=18),
+        axis.title.y = element_blank()) +
+  scale_y_discrete(guide = guide_axis(angle = 45)) 
+
+
+
+```
+
+```{r}
+# Dummy data
+x <- LETTERS[1:20]
+y <- paste0("var", seq(1,20))
+D <- expand.grid(X=x, Y=y)
+D$Z <- runif(400, 0, 5)
+```

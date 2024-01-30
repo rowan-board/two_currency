@@ -1,0 +1,125 @@
+---
+title: "make_text_files_patient"
+author: "RB"
+date: "2023-10-05"
+output: html_document
+---
+## making patient text files seperately due to different task structure ##
+
+load our libraries 
+```{r}
+library(tidyverse)
+library(wesanderson)
+library(gridExtra)
+library(ggpubr)
+library(stringr)
+```
+
+make lists for file storage
+```{r}
+nr <- c('ps1','ps2','ps3')
+nr_s <- c('1','2','3')
+
+
+for (i in 1:3){
+  file <- str_replace_all("raw_data/patient_AM_data/ps1_01.csv",'ps1',nr[i])
+  t <- str_replace_all('text_files/sub_23/run_1/trial_no_1.txt','1',nr_s[i])
+  r <- str_replace_all('text_files/sub_23/run_1/reward_1.txt','1',nr_s[i])
+  ev <- str_replace_all('text_files/sub_23/run_1/chosen_ev_1.txt','1',nr_s[i])
+  cd <- str_replace_all('text_files/sub_23/run_1/chosen_diff_1.txt','1',nr_s[i])
+  rd <- str_replace_all('text_files/sub_23/run_1/reward_diff_1.txt','1',nr_s[i])
+  m <- str_replace_all('text_files/sub_23/run_1/motivation_1.txt','1',nr_s[i])
+  
+  data <- read.csv(file) %>%
+            filter(!chosenDice == Inf)
+          chosen_net_model <- read.csv('modelling/summaries/chosen_net.csv')
+          chosen_diff_model <- read.csv('modelling/summaries/chosen_diff.csv')
+          
+  indexes = c(15093,15322,15552)
+  
+  ## what index to start with on modelled values
+  x = indexes[i]
+  
+  # trials data
+  N = length(data$allTrialIndex)
+  trial_no <- rep(1,N)
+  
+  # reward data
+  rwd_obb <- data$totalWin
+  rwd_sub <- data$allowedWinnings_1 + data$allowedWinnings_2
+  rwd_diff <- rwd_obb - rwd_sub
+  
+  # motivation
+  motivation <- data$isPurseFull_1 + data$isPurseFull_2
+  
+  # modelled values
+  # net chosen expected value
+  chosen_EV <- chosen_net_model[indexes[i]:(indexes[i]+N-1),2]
+  chosen_EV[is.na(chosen_EV)] <- 0
+  # chosen net expected value objective - subjective
+  chosen_diff <- chosen_diff_model[indexes[i]:(indexes[i]+N-1),2]
+  chosen_diff[is.na(chosen_diff)] <- 0
+  
+  #times
+  # start of scan 
+  start = data$startScan[1]
+  # time at decision
+  t_decision <- data$endDice-start
+  # time at reward
+  t_rwd <- data$startReward-start
+  # time at start of trial
+  t_trial_start <- data$startDice-start
+  
+  ## write text files
+  
+  # trial no
+  trial_no_text <- as.data.frame(cbind(trial_no,t_decision))
+  trial_no_text['zeros'] <- 0
+  trial_no_text <- trial_no_text %>%
+    select(t_decision,zeros,trial_no)
+        
+  write.table(trial_no_text, file=t,sep="\t", row.names=FALSE,col.names=FALSE)
+  
+  # reward
+  reward_text <- as.data.frame(cbind(rwd_obb,t_rwd))
+  reward_text['zeros'] <- 0
+  reward_text <- reward_text %>%
+    select(t_rwd,zeros,rwd_obb)
+        
+  write.table(reward_text, file=r,sep="\t", row.names=FALSE,col.names=FALSE)
+  
+  # reward diff
+  rd_text <- as.data.frame(cbind(rwd_diff,t_rwd))
+  rd_text['zeros'] <- 0
+  rd_text <- rd_text %>%
+    select(t_rwd,zeros,rwd_diff)
+        
+  write.table(rd_text, file=rd,sep="\t", row.names=FALSE,col.names=FALSE)
+  
+  # ev
+  ev_text <- as.data.frame(cbind(chosen_EV,t_decision))
+  ev_text['zeros'] <- 0
+  ev_text <- ev_text %>%
+    select(t_decision,zeros,chosen_EV)
+        
+  write.table(ev_text, file=ev,sep="\t", row.names=FALSE,col.names=FALSE)
+  
+  # chosen diff
+  cd_text <- as.data.frame(cbind(chosen_diff,t_decision))
+  cd_text['zeros'] <- 0
+  cd_text <- cd_text %>%
+    select(t_decision,zeros,chosen_diff)
+        
+  write.table(cd_text, file=cd,sep="\t", row.names=FALSE,col.names=FALSE)
+  
+  # motivation
+  m_text <- as.data.frame(cbind(motivation,t_decision))
+  m_text['zeros'] <- 0
+  m_text <- m_text %>%
+    select(t_decision,zeros,motivation)
+        
+  write.table(m_text, file=m,sep="\t", row.names=FALSE,col.names=FALSE)
+  
+  
+}
+```

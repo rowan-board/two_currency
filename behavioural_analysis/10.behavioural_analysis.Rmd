@@ -1,0 +1,912 @@
+---
+title: "behavioural_analysis"
+author: "RB"
+date: "30/09/2021"
+output: html_document
+---
+
+NOTES FOR NEXT TIME:
+probably better to turn the plotting functions into separate scripts 
+
+load packages
+```{r}
+library(tidyverse)
+library(wesanderson)
+library(gridExtra)
+library(ggpubr)
+library(rstan)
+library(plotrix)
+library(psycho)
+source('scripts/reverseFromZero.R')
+source('scripts/CrawfordHowell.R')
+```
+
+load online or offline data (online = in scanner)
+```{r}
+online = 1
+```
+
+load in the data 
+```{r}
+# read in the cleaned data, made in script 1.preprocess_2c.rmd
+if (online == 1)
+{
+  real_data <- read.csv('raw_data/clean/real_data_online.csv')
+  sim_data <- read.csv('raw_data/clean/sim_data_online.csv')
+  parameters <- read.csv('raw_data/clean/parameters_online.csv')
+  p_data <- read.csv('raw_data/clean/p_data_online.csv')
+} else {
+  real_data <- read.csv('raw_data/clean/real_data_offline.csv')
+  sim_data <- read.csv('raw_data/clean/sim_data_offline.csv')
+  parameters <- read.csv('raw_data/clean/parameters_offline.csv')
+  p_data <- read.csv('raw_data/clean/p_data_offline.csv')
+}
+
+# read in cleaned questionnaire data
+Q_results <- read.csv('results/questionnaire_results.csv')
+
+# read parameters
+fmri_vals <- read.csv('raw_data/clean/fmri_vals.csv')
+
+# set variable to data for analysis
+if (online == 1){
+  p_data['chosen_dev'] <- 0
+}
+
+p_data['p'] <- TRUE
+real_data ['p'] <- FALSE
+sim_data['p'] <- FALSE
+
+## bind the patient data and healthy data
+data <- rbind(real_data,p_data)
+
+```
+
+
+### RT analysis ### 
+do reaction times increase at the start of devaluation?
+do rt measures correlate with model params?
+
+```{r}
+# first let's get the n not including the patient 
+# useful for some analyses 
+n = length(parameters$lr)
+
+# create RT dataframe with all the states we're interested in
+# log transform all individual RTs
+RT <- data %>%
+  mutate(RT = endDice-startDice) %>%
+  #mutate(RT = log(RT)) %>%
+  select(state,stateTime,stateName,subject_nr,chosenDice,correctDice,correct,RT) 
+
+# compare RTs for correct vs incorrect choices during extinction 
+extinction_correct <- RT %>%
+  filter(stateName == 'extinction') %>%
+  filter(correct == 1) %>%
+  group_by(subject_nr) %>%
+  mutate(RTmean=mean(RT)) %>%
+  distinct(RTmean)
+extinction_correct = extinction_correct$RTmean
+
+extinction_incorrect <- RT %>%
+  filter(stateName == 'extinction') %>%
+  filter(correct == 0) %>%
+  group_by(subject_nr) %>%
+  mutate(RTmean=mean(RT)) %>%
+  distinct(RTmean)
+extinction_incorrect = extinction_incorrect$RTmean
+
+t.test(extinction_correct,extinction_incorrect)
+sd(extinction_correct)
+sd(extinction_incorrect)
+
+# compare RTs for extinction vs filling
+extinction_RT <- RT %>%
+  filter(stateName == 'extinction') %>%
+  filter(stateTime < 4) %>%
+  group_by(subject_nr) %>%
+  mutate(RTmean=mean(RT)) %>%
+  distinct(RTmean, stateName)
+extinction_RT_mean <- extinction_RT$RTmean  
+
+filling_RT <- RT %>%
+  filter(stateName == 'fill') %>%
+  group_by(subject_nr) %>%
+  mutate(RTmean=mean(RT)) %>%
+  distinct(RTmean, stateName)
+filling_RT_mean <- filling_RT$RTmean 
+
+t.test(extinction_RT_mean, filling_RT_mean)
+sd(extinction_RT_mean)
+sd(filling_RT_mean)
+
+RT1_set <- rbind(extinction_RT,filling_RT)
+
+rt1_plot <- ggplot(RT1_set, aes(stateName, RTmean)) +
+  geom_violin()
+
+## now calculate devalutation effect on RT and correlate with questionnaire measures
+rt_diff = extinction_RT_mean - filling_RT_mean
+
+rt_diff <- as.data.frame(rt_diff) %>%
+  rowid_to_column() %>%
+  mutate(subject_nr = rowid+1) %>%
+  select(subject_nr, rt_diff)
+
+Q_results <- merge(Q_results,rt_diff)
+
+# a few explorative correlations
+cor.test(Q_results$AMI,Q_results$rt_diff)
+cor.test(Q_results$HADS,Q_results$rt_diff)
+cor.test(Q_results$GRIT,Q_results$rt_diff)
+cor.test(rt_diff$rt_diff[1:n],parameters$tau)
+cor.test(rt_diff$rt_diff[1:n],parameters$lr)
+cor.test(parameters$lr,parameters$tau)
+
+plotting_params <- as.data.frame(cbind(parameters$lr,parameters$tau)) %>%
+  rename(lr=V1,tau=V2)
+plotting_params['subj'] <- rep(1:n)
+
+# plot lr and tau 
+lr_tau <- ggplot(plotting_params, aes(x=lr, y=tau)) +
+  geom_point() +
+  theme_classic() +
+  scale_x_continuous(n.breaks=5,limits=c(0,1)) +
+  theme(legend.position='none',
+        axis.text=element_text(size=14),
+        axis.title=element_text(size=17),
+        plot.title=element_text(size=17)) +
+  labs(title='Winning model parameters',x='Learning rate',y='Inverse temperature') 
+
+```
+
+
+### CHOICE PROBABILITIES DURING DEVALUATION ANALYSIS ###
+analyzing whether participants took the devaluation into account in their choices 
+
+Probability of choosing the correct dice on reinstatement states 
+correct = dice associated to non devalued token
+```{r}
+# create reinstatement states data frame
+reinstatement_states <- data %>%
+  filter(stateName == 'reinstatement') %>%
+  select(state, stateName, chosenDice, correct, subject_nr, trialIndex, stateTime, p) %>%
+  group_by(subject_nr, p ) 
+```
+
+get the mean and sd of percentage chose correct for reinstatement states for each ppt
+```{r}
+reinstatement_states <- reinstatement_states %>%
+  mutate(pptMean = mean(correct)) %>%
+  mutate(pptSD = sd(correct))
+```
+
+same again but for extinction states
+technically no correct answer as reward probabilities are both set to 0 here
+but in theory participants should take into account the devaluation into their choices 
+```{r}
+# isolate the devalued states and select the needed variables 
+extinction_states <- data %>% 
+  select(subject_nr, stateName, correct, chosenDice, stateTime, state, trialIndex, p) %>%
+  group_by(subject_nr, p) %>%
+  filter(stateName == 'extinction')
+
+```
+
+calculate the means and sd's for the probability of choosing the correct dice during extinction 
+```{r}
+extinction_states <- extinction_states %>%
+  mutate(pptMean = mean(correct)) %>%
+  mutate(pptSD = sd(correct))
+```
+
+plot these probabilities as box plots for both states
+```{r}
+# box plots for p(chose correct) for each ppt
+plotting_1 <- rbind(reinstatement_states,extinction_states) %>%
+  select(subject_nr,pptMean,stateName,p) %>%
+  rename(patient = p) %>%
+  distinct(subject_nr,pptMean,stateName,patient)
+
+box_1 <- ggplot(plotting_1, aes(y=pptMean, x=stateName, group=stateName, fill=stateName)) +
+  geom_boxplot(data = plotting_1 %>% filter(!patient==TRUE)) +
+  geom_jitter(aes(y=pptMean,x=stateName,group=subject_nr, colour=patient),width=0.2, height = 0) +
+  scale_fill_manual(values = wes_palette("Darjeeling2", n = 2)) +
+  theme(axis.line = element_line(color='black'),
+        panel.background = element_blank(),
+        axis.title.x = element_blank(),
+        axis.ticks.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.text=element_text(size=14),
+        axis.title=element_text(size=14),
+        plot.title=element_text(size=14),
+        legend.text=element_text(size=12),
+        legend.title = element_text(size=12)) +
+  labs(title = "Choice probability for still valuable option during devaluation states", y="p(chose correct)") +
+  scale_y_continuous(limits = c(-0.1,1.1), breaks = c(0,0.25,0.5,0.75,1)) +
+  theme(text = element_text(size=10)) 
+
+
+# individual histograms for devaluation effect during extinction
+hist_extinction <- plotting_1 %>%
+  filter(stateName=='extinction') %>%
+  mutate(pptMean=pptMean-0.5) # gives devaluation effect
+
+extinction_deval_hist <- ggplot(hist_extinction,aes(x=pptMean)) +
+  geom_histogram(binwidth = 0.1,colour='black',fill='#FF9B5E') +
+  theme_classic() +
+  theme(legend.position = 'none',
+        axis.text=element_text(size=14),
+        axis.title=element_text(size=18),
+        plot.title=element_text(size=18)) +
+  labs(title='Extinction - Devaluation effect',x='Choice prob - Chance',y='No. Participants') +
+  scale_x_continuous(breaks=c(-0.1,0,0.1,0.2,0.3,0.4,0.5))
+  
+```
+
+significance testing
+```{r}
+# generate 'devaluation effect' on choice probability
+# mean choice probability in state - chance level (50%)
+
+# for reinstatemnet first
+reinstatement_devaluation <- reinstatement_states %>%
+  select(subject_nr,pptMean,pptSD) %>%
+  distinct(subject_nr,pptMean,pptSD) %>%
+  mutate(devaluation=pptMean-0.5)
+
+# now extinction
+extinction_devaluation <- extinction_states %>%
+  select(subject_nr,pptMean,pptSD) %>%
+  distinct(subject_nr,pptMean,pptSD) %>%
+  mutate(devaluation=pptMean-0.5)
+
+t.test(reinstatement_devaluation$devaluation)
+t.test(extinction_devaluation$devaluation)
+
+cor.test(reinstatement_devaluation$devaluation[1:n],parameters$lr)
+cor.test(reinstatement_devaluation$devaluation[1:n],parameters$tau)
+cor.test(extinction_devaluation$devaluation[1:n],parameters$lr)
+cor.test(extinction_devaluation$devaluation[1:n],parameters$tau)
+cor.test(reinstatement_devaluation$devaluation[1:n],extinction_devaluation$devaluation[1:n])
+cor.test(reinstatement_devaluation$devaluation[1:n],rt_diff$rt_diff[1:n])
+cor.test(extinction_devaluation$devaluation[1:n],rt_diff$rt_diff[1:n])
+
+plot(reinstatement_devaluation$devaluation[1:n],parameters$tau)
+plot(extinction_devaluation$devaluation[1:n],parameters$tau)
+plot(reinstatement_devaluation$devaluation[1:n],extinction_devaluation$devaluation[1:n])
+
+# patient vs control 
+CrawfordHowell(extinction_devaluation$devaluation[22],extinction_devaluation$devaluation[1:21])
+CrawfordHowell(reinstatement_devaluation$devaluation[22],reinstatement_devaluation$devaluation[1:21])
+```
+
+### LEARNING CURVE ANLAYSIS ###
+
+Learning
+Here we're going to isolate the probability of choosing dice A for each state
+very long code as we're doing all states up to state 21
+Could probably use a for loop to do a lot of this 
+
+```{r}
+## set a few variable specific to each task version
+if(online==0){
+  # states that need to have their choices flipped for consistent average choice
+  s1=9
+  s2=10
+  s3=11
+  s4=12
+  # length of states for the plot
+  FL <- 10
+  EL <- 8
+  RL <- 10
+  SL1 <- 10
+  SL2 <- 8
+  PL <- 4
+} else if(online==1){
+  # states that need to have their choices flipped for consistent average choice
+  s1=8
+  s2=9
+  s3=10
+  s4=11
+  # length of states for the plot
+  FL <- 10
+  EL <- 8
+  RL <- 12
+  SL1 <- 12
+  SL2 <- 8
+  PL <- 4
+}
+
+# first lets run on the real data then simulated
+datasets = c('real','sim')
+for (j in 1:2){
+  # set data to real then sim
+  if (datasets[j] == 'real'){
+    data <- rbind(real_data,p_data)
+  } else if (datasets[j] == 'sim'){
+    data <- sim_data
+  }
+  
+  ## then run analysis
+  
+  # first we need the adapted trial number for the fill states
+  # trial 1 of extinction will be trial 0, so need to reverse fill
+  fill <- data %>%
+    select(stateName,state,stateTime,subject_nr,chosenDice,p) %>%
+    filter(stateName == 'fill') %>%
+    rename(trialNr = stateTime) %>%
+    rowid_to_column()
+
+  # reverse choices for state 8 so consistent for choice prob analysis
+  for (i in fill$rowid){
+    if(fill[i,]$state == s1 & fill[i,]$chosenDice == 1){
+      fill[i,]$chosenDice = 2
+    } else if (fill[i,]$state == s1 & fill[i,]$chosenDice == 2){
+      fill[i,]$chosenDice = 1
+    }
+  }
+
+  adaptedTrialNr = reverseFromZero(fill)
+  
+  fill['adaptedTrialNr'] = adaptedTrialNr
+  
+  fill <- fill %>%
+    group_by(adaptedTrialNr,subject_nr,p) %>%
+    mutate(pChoice = mean(chosenDice)-1) %>%
+    distinct(adaptedTrialNr, pChoice, subject_nr,p)
+
+  ## now the extinction states
+  extinction <- data %>%
+    select(stateName,stateTime,state,subject_nr,chosenDice,p) %>%
+    filter(stateName=='extinction') %>%
+    rename(trialNr = stateTime) %>%
+    rowid_to_column()
+
+  # reverse choices for state 9 so consistent for choice prob analysis
+  for (i in extinction$rowid){
+    if(extinction[i,]$state == s2 & extinction[i,]$chosenDice == 1){
+      extinction[i,]$chosenDice = 2
+    } else if (extinction[i,]$state == s2 & extinction[i,]$chosenDice == 2){
+      extinction[i,]$chosenDice = 1
+    }
+  }
+
+  extinction['adaptedTrialNr'] <- extinction$trialNr-1 # want first trial of extinction to be trial 0
+  
+  extinction <- extinction %>%
+    group_by(adaptedTrialNr,subject_nr,p) %>%
+    mutate(pChoice = mean(chosenDice)-1) %>%
+    distinct(adaptedTrialNr, pChoice, subject_nr,p)
+  
+  ex_l=max(extinction$adaptedTrialNr) #extinction length 
+
+  ## now the reinstatement states
+  reinstatement <- data %>%
+    select(stateName,stateTime,state,subject_nr,chosenDice,p) %>%
+    filter(stateName=='reinstatement') %>%
+    rename(trialNr = stateTime) %>%
+    rowid_to_column()
+  
+  # reverse choices for state 9 so consistent for choice prob analysis
+  for (i in reinstatement$rowid){
+    if(reinstatement[i,]$state == s3 & reinstatement[i,]$chosenDice == 1){
+      reinstatement[i,]$chosenDice = 2
+    } else if (reinstatement[i,]$state == s3 & reinstatement[i,]$chosenDice == 2){
+      reinstatement[i,]$chosenDice = 1
+    }
+  }
+  
+  reinstatement['adaptedTrialNr'] <- reinstatement$trialNr+ex_l
+  
+  reinstatement <- reinstatement %>%
+    group_by(adaptedTrialNr,subject_nr,p) %>%
+    mutate(pChoice = mean(chosenDice)-1) %>%
+    distinct(adaptedTrialNr, pChoice, subject_nr,p)
+  
+
+
+  # switch
+  
+  switch <- data %>%
+    select(stateName,stateTime,subject_nr,chosenDice,p) %>%
+    filter(stateName=='switch') %>%
+    rename(trialNr = stateTime) %>%
+    rowid_to_column()
+  
+  switch['adaptedTrialNr'] = switch$trialNr+(EL+RL)
+  
+  switch_1 <- switch %>%
+    group_by(adaptedTrialNr,subject_nr,p) %>%
+    mutate(pChoice = mean(chosenDice)-1) %>%
+    distinct(adaptedTrialNr, pChoice, subject_nr,p)
+  
+  adaptedTrialNr = reverseFromZero(switch)
+  switch['adaptedTrialNr'] = adaptedTrialNr
+
+  switch_2 <- switch %>%
+    group_by(adaptedTrialNr,subject_nr,p) %>%
+    mutate(pChoice = mean(chosenDice)-1) %>%
+    distinct(adaptedTrialNr, pChoice, subject_nr,p)
+
+  ## now the post state
+  post <- data %>%
+    select(stateName,stateTime,state,subject_nr,chosenDice,p) %>%
+    filter(stateName=='post') %>%
+    rename(trialNr = stateTime) %>%
+    rowid_to_column()
+  
+  
+  # reverse choices for state 11 so consistent for choice prob analysis
+  for (i in post$rowid){
+    if(post[i,]$state == s4 & post[i,]$chosenDice == 1){
+      post[i,]$chosenDice = 2
+    } else if (post[i,]$state == s4 & post[i,]$chosenDice == 2){
+      post[i,]$chosenDice = 1
+    }
+  }
+  
+  post['adaptedTrialNr'] <- post$trialNr-1
+  
+  post <- post %>%
+    group_by(adaptedTrialNr,subject_nr,p) %>%
+    mutate(pChoice = mean(chosenDice)-1) %>%
+    distinct(adaptedTrialNr, pChoice, subject_nr,p)
+  
+  # now lets rename the pChoice variables to real and sim pChoice
+  if (datasets[j] == 'real'){
+    fill_total <- fill %>%
+      rename(pChoiceReal = pChoice)
+    extinction_total <- extinction %>%
+      rename(pChoiceReal = pChoice)
+    reinstatement_total <- reinstatement %>%
+      rename(pChoiceReal = pChoice)
+    switch_1_total <- switch_1 %>%
+      rename(pChoiceReal = pChoice)
+    switch_2_total <- switch_2 %>%
+      rename(pChoiceReal = pChoice)
+    post_total <- post %>%
+      rename(pChoiceReal = pChoice)
+  } else if (datasets[j] == 'sim'){
+    fill <- fill %>%
+      rename(pChoiceSim = pChoice)
+    extinction <- extinction %>%
+      rename(pChoiceSim = pChoice)
+    reinstatement <- reinstatement %>%
+      rename(pChoiceSim = pChoice)
+    switch_1 <- switch_1 %>%
+      rename(pChoiceSim = pChoice)
+    switch_2 <- switch_2 %>%
+      rename(pChoiceSim = pChoice)
+    post <- post %>%
+      rename(pChoiceSim = pChoice)
+  }
+}
+
+n = max(data$subject_nr)
+
+# bind by adapted trial number and subject number 
+fill <- merge(fill,fill_total,by=c('subject_nr','adaptedTrialNr','p'))
+extinction <- merge(extinction,extinction_total,by=c('subject_nr','adaptedTrialNr','p'))
+reinstatement <- merge(reinstatement,reinstatement_total,by=c('subject_nr','adaptedTrialNr','p'))
+switch_1 <- merge(switch_1,switch_1_total,by=c('subject_nr','adaptedTrialNr','p'))
+switch_2 <- merge(switch_2,switch_2_total,by=c('subject_nr','adaptedTrialNr','p'))
+post <- merge(post,post_total,by=c('subject_nr','adaptedTrialNr','p'))
+
+## calculate averages and standard errors for each trial within a state across participants 
+# first calculate all the averages 
+
+fill_total <- fill %>%
+  group_by(adaptedTrialNr) %>%
+  mutate(semChoice = sd(pChoiceReal)/sqrt(n)) %>%
+  mutate(pChoiceReal = mean(pChoiceReal)) %>%
+  mutate(pChoiceSim = mean(pChoiceSim)) %>%
+  distinct(adaptedTrialNr,pChoiceReal,pChoiceSim,semChoice) %>%
+  filter(adaptedTrialNr > -(FL+1)) # only use first 10 trials for plot (-1:-10)
+
+# then get into correct format to plot predicted and actual choice together
+meanChoice <- c(fill_total$pChoiceReal,fill_total$pChoiceSim)
+semChoice <- c(fill_total$semChoice,rep(NA,FL))
+dataType <- rep('actual',(FL*2))
+dataType[(FL+1):(FL*2)] <- 'model'
+adaptedTrialNr <- rep(fill_total$adaptedTrialNr,2)
+
+fill_total <- as.data.frame(cbind(meanChoice,semChoice))
+fill_total['dataType'] <- dataType
+fill_total['adaptedTrialNr'] <- adaptedTrialNr
+
+# now the same for extinction
+extinction_total <- extinction %>%
+  group_by(adaptedTrialNr) %>%
+  mutate(semChoice = sd(pChoiceReal)/sqrt(n)) %>%
+  mutate(pChoiceReal = mean(pChoiceReal)) %>%
+  mutate(pChoiceSim = mean(pChoiceSim)) %>%
+  distinct(adaptedTrialNr,pChoiceReal,pChoiceSim,semChoice)
+
+# then get into correct format to plot predicted and actual choice together
+meanChoice <- c(extinction_total$pChoiceReal,extinction_total$pChoiceSim)
+semChoice <- c(extinction_total$semChoice,rep(NA,EL))
+dataType <- rep('actual',(EL*2))
+dataType[(EL+1):(EL*2)] <- 'model'
+adaptedTrialNr <- rep(extinction_total$adaptedTrialNr,2)
+
+extinction_total <- as.data.frame(cbind(meanChoice,semChoice))
+extinction_total['dataType'] <- dataType
+extinction_total['adaptedTrialNr'] <- adaptedTrialNr
+
+# now for reinstatement
+reinstatement_total <- reinstatement %>%
+  group_by(adaptedTrialNr) %>%
+  mutate(semChoice = sd(pChoiceReal)/sqrt(n)) %>%
+  mutate(pChoiceReal = mean(pChoiceReal)) %>%
+  mutate(pChoiceSim = mean(pChoiceSim)) %>%
+  distinct(adaptedTrialNr,pChoiceReal,pChoiceSim,semChoice) %>%
+  filter(adaptedTrialNr < (EL+RL))
+
+# then get into correct format to plot predicted and actual choice together
+meanChoice <- c(reinstatement_total$pChoiceReal,reinstatement_total$pChoiceSim)
+semChoice <- c(reinstatement_total$semChoice,rep(NA,RL))
+dataType <- rep('actual',(RL*2))
+dataType[(RL+1):(RL*2)] <- 'model'
+adaptedTrialNr <- rep(reinstatement_total$adaptedTrialNr,2)
+
+reinstatement_total <- as.data.frame(cbind(meanChoice,semChoice))
+reinstatement_total['dataType'] <- dataType
+reinstatement_total['adaptedTrialNr'] <- adaptedTrialNr
+
+# switches
+switch_1_total <- switch_1 %>%
+  group_by(adaptedTrialNr) %>%
+  mutate(semChoice = sd(pChoiceReal)/sqrt(n)) %>%
+  mutate(pChoiceReal = mean(pChoiceReal)) %>%
+  mutate(pChoiceSim = mean(pChoiceSim)) %>%
+  distinct(adaptedTrialNr,pChoiceReal,pChoiceSim,semChoice) %>%
+  filter(adaptedTrialNr < (EL+RL+SL1+1))
+
+# then get into correct format to plot predicted and actual choice together
+meanChoice <- c(switch_1_total$pChoiceReal,switch_1_total$pChoiceSim)
+semChoice <- c(switch_1_total$semChoice,rep(NA,SL1))
+dataType <- rep('actual',(SL1*2))
+dataType[(SL1+1):(SL1*2)] <- 'model'
+adaptedTrialNr <- rep(switch_1_total$adaptedTrialNr,2)
+
+switch_1_total <- as.data.frame(cbind(meanChoice,semChoice))
+switch_1_total['dataType'] <- dataType
+switch_1_total['adaptedTrialNr'] <- adaptedTrialNr
+
+# reinstatement 2
+switch_2_total <- switch_2 %>%
+  group_by(adaptedTrialNr) %>%
+  mutate(semChoice = sd(pChoiceReal)/sqrt(n)) %>%
+  mutate(pChoiceReal = mean(pChoiceReal)) %>%
+  mutate(pChoiceSim = mean(pChoiceSim)) %>%
+  distinct(adaptedTrialNr,pChoiceReal,pChoiceSim,semChoice) %>%
+  filter(adaptedTrialNr > -(SL2+1))
+
+# then get into correct format to plot predicted and actual choice together
+meanChoice <- c(switch_2_total$pChoiceReal,switch_2_total$pChoiceSim)
+semChoice <- c(switch_2_total$semChoice,rep(NA,SL2))
+dataType <- rep('actual',(SL2*2))
+dataType[(SL2+1):(SL2*2)] <- 'model'
+adaptedTrialNr <- rep(switch_2_total$adaptedTrialNr,2)
+
+switch_2_total <- as.data.frame(cbind(meanChoice,semChoice))
+switch_2_total['dataType'] <- dataType
+switch_2_total['adaptedTrialNr'] <- adaptedTrialNr
+
+# now for post
+post_total <- post %>%
+  group_by(adaptedTrialNr) %>%
+  mutate(semChoice = sd(pChoiceReal)/sqrt(n)) %>%
+  mutate(pChoiceReal = mean(pChoiceReal)) %>%
+  mutate(pChoiceSim = mean(pChoiceSim)) %>%
+  distinct(adaptedTrialNr,pChoiceReal,pChoiceSim,semChoice)
+
+# then get into correct format to plot predicted and actual choice together
+meanChoice <- c(post_total$pChoiceReal,post_total$pChoiceSim)
+semChoice <- c(post_total$semChoice,rep(NA,PL))
+dataType <- rep('actual',(PL*2))
+dataType[(PL+1):(PL*2)] <- 'model'
+adaptedTrialNr <- rep(post_total$adaptedTrialNr,2)
+
+post_total <- as.data.frame(cbind(meanChoice,semChoice))
+post_total['dataType'] <- dataType
+post_total['adaptedTrialNr'] <- adaptedTrialNr
+
+
+## plotting time
+reversals_1 <- rbind(fill_total,extinction_total,reinstatement_total,switch_1_total) 
+
+plot_reversal_1_x <- ggplot(reversals_1, aes(x=adaptedTrialNr, y=meanChoice, group=dataType, color = dataType)) +
+  geom_line(size=1) + 
+  geom_errorbar(aes(ymin=meanChoice-semChoice,ymax=meanChoice+semChoice, color=dataType)) +
+  geom_vline(xintercept = c(0,EL,(EL+RL)), linetype = "dotted") +
+  geom_vline(xintercept = c(EL+RL+SL1), linetype = "dashed", size=1) +
+  scale_y_continuous(limits = c(-0.1,1.1), breaks = c(0,0.25,0.5,0.75,1)) +
+  scale_x_continuous(limits = c(-FL,(EL+RL+SL1)), breaks = seq((-FL+2),(EL+RL+SL1),by=4)) +
+  theme_classic() +
+  theme(legend.position = "none",
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14),
+        plot.title=element_text(size=16)) +
+  labs(title = "Choice Probability - Stochastic Verosion", x = "Trial number", y = "Choice probability, non-devalued option") + 
+  annotate(
+    "text", label = "F",
+    x = -4, y = 1.1, size = 5, colour = "red", fontface=2
+  ) +
+  annotate(
+    "text", label = "EX",
+    x = 4, y = 1.1, size = 5, colour = "red", fontface=2
+  ) +
+  annotate(
+    "text", label = "R",
+    x = (RL+2), y = 1.1, size = 5, colour = "red", fontface=2
+  ) +
+  annotate(
+    "text", label = "S",
+    x = (RL+SL1+2), y = 1.1, size = 5, colour = "red", fontface=2
+  )
+
+
+reversals_1_y <- rbind(switch_2_total,post_total)
+
+plot_reversal_1_y <- ggplot(reversals_1_y, aes(x=adaptedTrialNr, y=meanChoice, group=dataType, colour=dataType)) +
+  geom_line(size=1) +
+  geom_errorbar(aes(ymin=meanChoice-semChoice,ymax=meanChoice+semChoice, color=dataType)) +
+  geom_vline(xintercept = c(0), linetype = "dotted") +
+  geom_vline(xintercept = c(-8), linetype = "dashed", size=1) +
+  scale_y_continuous(limits = c(-0.1,1.1), breaks = c(0,0.25,0.5,0.75,1)) +
+  scale_x_continuous(limits = c(-SL2,PL), breaks = seq((-SL2),(PL),by=4)) +
+  theme_classic() +
+  theme(axis.text.y = element_blank(),
+        axis.title.y = element_blank(),
+        axis.line.y = element_blank(),
+        axis.ticks.y = element_blank(),
+        axis.text=element_text(size=12),
+        axis.title=element_text(size=14),
+        plot.title=element_text(size=18),
+        legend.key.size =unit(2,'cm'),
+        legend.text = element_text(size=14),
+        legend.title = element_text(size=14)) +
+  labs(title = "", x = "Trial number", y = "Choice Probability") + 
+  annotate(
+    "text", label = "EM",
+    x = 2, y = 1.1, size = 5, colour = "red", fontface=2
+  ) +
+  annotate(
+    "text", label = "S",
+    x = -4, y = 1.1, size = 5, colour = "red", fontface=2
+  )
+
+plot1 <- plot_reversal_1_x
+plot2 <- plot_reversal_1_y
+grid.arrange(plot1, plot2, ncol=2)
+
+```
+
+
+## brain behaviour correlations ##
+```{r}
+if (online == 1){
+  
+  # devaluation effects on choice prob
+  # primarily interest in vmpfc_m and vs_rd
+  cor.test(reinstatement_devaluation$devaluation[1:21],fmri_vals$vmpfc_cd[1:21])
+  cor.test(reinstatement_devaluation$devaluation[1:21],fmri_vals$vmpfc_rd[1:21])
+  cor.test(reinstatement_devaluation$devaluation[1:21],fmri_vals$vs_rd[1:21])
+  cor.test(reinstatement_devaluation$devaluation[1:21],fmri_vals$vmpfc_m[1:21])
+  cor.test(reinstatement_devaluation$devaluation[1:21],fmri_vals$dmpfc_cd[1:21])
+  cor.test(extinction_devaluation$devaluation[1:21],fmri_vals$vmpfc_cd[1:21])
+  cor.test(extinction_devaluation$devaluation[1:21],fmri_vals$vmpfc_rd[1:21])
+  cor.test(extinction_devaluation$devaluation[1:21],fmri_vals$vs_rd[1:21])
+  cor.test(extinction_devaluation$devaluation[1:21],fmri_vals$vmpfc_m[1:21])
+  cor.test(extinction_devaluation$devaluation[1:21],fmri_vals$dmpfc_cd[1:21])
+  cor.test(extinction_devaluation$devaluation[1:21],fmri_vals$vmpfc_rd[1:21])
+
+  
+  ## plotting the significant ones
+  MExtDeval <- as.data.frame(cbind(fmri_vals$vmpfc_m,extinction_devaluation$devaluation))
+  
+  MExtDeval_plot <- ggplot(MExtDeval, aes(x=V1,y=V2)) +
+    geom_point() +
+    geom_smooth(method='lm',se=F,colour='red') +
+    labs(title='Extinction',y="Probability of choosing \n non-devalued option - chance", x='Motivation signal - mPFC') +
+    theme_bw() +
+    theme(axis.title = element_text(size=18),
+          axis.text = element_text(size=18),
+          plot.title = element_text(size=18))
+  
+  MReinDeval <- as.data.frame(cbind(fmri_vals$vmpfc_m,reinstatement_devaluation$devaluation))
+  
+  MReinDeval_plot <- ggplot(MReinDeval, aes(x=V1,y=V2)) +
+    geom_point() +
+    geom_smooth(method='lm',se=F,colour='red') +
+    labs(title='Reinstatement',y="Probability of choosing \n non-devalued option - chance", x='Motivation signal - mPFC') +
+    theme_bw() +
+    theme(axis.title = element_text(size=18),
+          axis.text = element_text(size=18),
+          plot.title = element_text(size=18))
+  
+  DrwdExtDeval <- as.data.frame(cbind(fmri_vals$vs_rd,extinction_devaluation$devaluation))
+  
+  DrwdExtDeval_plot <- ggplot(DrwdExtDeval, aes(x=V1,y=V2)) +
+    geom_point() +
+    geom_smooth(method='lm',se=F,colour='blue') +
+    labs(y="Probability of choosing \n non-devalued option - chance", x='Devaluation of Reward Signal - Ventral Striatum') +
+    theme_bw() +
+    theme(axis.title = element_text(size=18),
+          axis.text = element_text(size=18))
+    
+                          
+  # tau, primarily interested in dmPFC_CD - should correlate as used for exploration
+  cor.test(parameters$tau,fmri_vals$dmpfc_cd)
+  plot(parameters$tau,fmri_vals$dmpfc_cd)
+  
+  # correlations between signals
+  cor.test(fmri_vals$vmpfc_m,fmri_vals$vs_rd)
+  cor.test(fmri_vals$vmpfc_m,fmri_vals$vmpfc_rd)
+  cor.test(fmri_vals$vmpfc_m,fmri_vals$vmpfc_cd)
+  cor.test(fmri_vals$vmpfc_cd,fmri_vals$vs_rd)
+  cor.test(fmri_vals$vmpfc_rd,fmri_vals$vs_rd)
+  
+  # questionnaire correlations
+  cor.test(Q_results$AMI,fmri_vals$vmpfc_cd[1:n-1])
+  cor.test(Q_results$AMI,fmri_vals$vmpfc_rd[1:n-1])
+  plot(Q_results$AMI,fmri_vals$vmpfc_rd[1:n-1])
+  cor.test(Q_results$AMI,fmri_vals$vs_rd[1:n-1])
+  cor.test(Q_results$AMI,fmri_vals$vmpfc_m[1:n-1])
+  cor.test(Q_results$HADS,fmri_vals$vmpfc_cd[1:n-1])
+  plot(Q_results$HADS,fmri_vals$vmpfc_cd[1:n-1])
+  cor.test(Q_results$HADS,fmri_vals$vmpfc_rd[1:n-1])
+  cor.test(Q_results$HADS,fmri_vals$vs_rd[1:n-1])
+  cor.test(Q_results$HADS,fmri_vals$vmpfc_m[1:n-1])
+  cor.test(Q_results$GRIT,fmri_vals$vmpfc_cd[1:n-1])
+  cor.test(Q_results$GRIT,fmri_vals$vmpfc_rd[1:n-1])
+  cor.test(Q_results$GRIT,fmri_vals$vs_rd[1:n-1])
+  plot(Q_results$GRIT,fmri_vals$vs_rd[1:n-1])
+  cor.test(Q_results$GRIT,fmri_vals$vmpfc_m[1:n-1])
+  
+  # patient vs control 
+  CrawfordHowell(fmri_vals$left_vs_roi_rwd[22],fmri_vals$left_vs_roi_rwd[1:21])
+  CrawfordHowell(fmri_vals$left_vs_roi_rwd_d[22],fmri_vals$left_vs_roi_rwd_d[1:21])
+}
+```
+analysis of patient vs healthy
+```{r}
+### Histograms comparing mean activity in ROI for several key regressors, patient vs controls ###
+
+# motivation fmri values 
+patient_m <- as.data.frame(fmri_vals$vmpfc_m)
+
+# create vector of 0s but last value 1, indicates which ones is patient
+p <- rep(0,22)
+p[22]=1
+
+#bind to patient_m
+patient_m <- cbind(patient_m,p)
+
+m_hist <- ggplot(patient_m,aes(x=fmri_vals$vmpfc_m,group=p,fill=p,color=p)) +
+  geom_histogram(binwidth = 0.05,colour='black') +
+  theme_classic() +
+  theme(legend.position = 'none',
+        axis.text=element_text(size=14),
+        axis.title=element_text(size=18),
+        plot.title=element_text(size=18)) +
+  labs(title='Patient vs Controls - Motivation',x='M - mean beta weight from vmpfc ROI',y='No. Participants') 
+
+## now for cd in vmpfc
+patient_vmpfc_cd <- as.data.frame(fmri_vals$vmpfc_cd)
+
+# create vector of 0s but last value 1, indicates which ones is patient
+p <- rep(0,22)
+p[22]=1
+
+#bind to patient_vmpfc_cd
+patient_vmpfc_cd <- cbind(patient_vmpfc_cd,p)
+
+vmpfc_cd_hist <- ggplot(patient_vmpfc_cd,aes(x=fmri_vals$vmpfc_cd,group=p,fill=p,color=p)) +
+  geom_histogram(binwidth = 0.1,colour='black') +
+  theme_classic() +
+  theme(legend.position = 'none',
+        axis.text=element_text(size=14),
+        axis.title=element_text(size=18),
+        plot.title=element_text(size=18)) +
+  labs(title='Patient vs Controls - Chosen Difference',x='vmpfc_cd - mean beta weight from vmpfc ROI',y='No. Participants') 
+
+## now for rd in vmpfc
+patient_vmpfc_rd <- as.data.frame(fmri_vals$vmpfc_rd)
+
+# create vector of 0s but last value 1, indicates which ones is patient
+p <- rep(0,22)
+p[22]=1
+
+#bind to patient_vmpfc_rd
+patient_vmpfc_rd <- cbind(patient_vmpfc_rd,p)
+
+vmpfc_rd_hist <- ggplot(patient_vmpfc_rd,aes(x=fmri_vals$vmpfc_rd,group=p,fill=p,color=p)) +
+  geom_histogram(binwidth = 0.05,colour='black') +
+  theme_classic() +
+  theme(legend.position = 'none',
+        axis.text=element_text(size=14),
+        axis.title=element_text(size=18),
+        plot.title=element_text(size=18)) +
+  labs(title='Patient vs Controls - reward difference',x='vmpfc_rd - mean beta weight from vmpfc ROI',y='No. Participants') 
+
+## now for rd in vs
+patient_vs_rd <- as.data.frame(fmri_vals$vs_rd)
+
+# create vector of 0s but last value 1, indicates which ones is patient
+p <- rep(0,22)
+p[22]=1
+
+#bind to patient_vs_rd
+patient_vs_rd <- cbind(patient_vs_rd,p)
+
+vs_rd_hist <- ggplot(patient_vs_rd,aes(x=fmri_vals$vs_rd,group=p,fill=p,color=p)) +
+  geom_histogram(binwidth = 0.05,colour='black') +
+  theme_classic() +
+  theme(legend.position = 'none',
+        axis.text=element_text(size=14),
+        axis.title=element_text(size=18),
+        plot.title=element_text(size=18)) +
+  labs(title='Patient vs Controls - reward diff',x='vs_rd - mean beta weight from vs ROI',y='No. Participants') 
+
+## now for cd in vs
+patient_vs_cd <- as.data.frame(fmri_vals$vs_cd)
+
+# create vector of 0s but last value 1, indicates which ones is patient
+p <- rep(0,22)
+p[22]=1
+
+#bind to patient_vs_cd
+patient_vs_cd <- cbind(patient_vs_cd,p)
+
+vs_cd_hist <- ggplot(patient_vs_cd,aes(x=fmri_vals$vs_cd,group=p,fill=p,color=p)) +
+  geom_histogram(binwidth = 0.05,colour='black') +
+  theme_classic() +
+  theme(legend.position = 'none',
+        axis.text=element_text(size=14),
+        axis.title=element_text(size=18),
+        plot.title=element_text(size=18)) +
+  labs(title='Patient vs Controls - chosen diff',x='vs_cd - mean beta weight from vs ROI',y='No. Participants')
+
+## now for cd in dmpfc
+patient_dmpfc_cd <- as.data.frame(fmri_vals$dmpfc_cd)
+
+# create vector of 0s but last value 1, indicates which ones is patient
+p <- rep(0,22)
+p[22]=1
+
+#bind to patient_dmpfc_cd
+patient_dmpfc_cd <- cbind(patient_dmpfc_cd,p)
+
+dmpfc_cd_hist <- ggplot(patient_dmpfc_cd,aes(x=fmri_vals$dmpfc_cd,group=p,fill=p,color=p)) +
+  geom_histogram(binwidth = 0.05,colour='black') +
+  theme_classic() +
+  theme(legend.position = 'none',
+        axis.text=element_text(size=14),
+        axis.title=element_text(size=18),
+        plot.title=element_text(size=18)) +
+  labs(title='Patient vs Controls - chosen diff',x='dmpfc_cd - mean beta weight from dmpfc ROI',y='No. Participants')
+
+## now for cd in lfp
+patient_lfp_cd <- as.data.frame(fmri_vals$lfp_cd)
+
+# create vector of 0s but last value 1, indicates which ones is patient
+p <- rep(0,22)
+p[22]=1
+
+# bind to patient_lfp_cd
+patient_lfp_cd <- cbind(patient_lfp_cd,p)
+
+lfp_hist <- ggplot(patient_lfp_cd,aes(x=fmri_vals$lfp_cd,group=p,fill=p,color=p)) +
+  geom_histogram(binwidth = 0.05,colour='black') +
+  theme_classic() +
+  theme(legend.position = 'none',
+        axis.text=element_text(size=14),
+        axis.title=element_text(size=18),
+        plot.title=element_text(size=18)) +
+  labs(title='Patient vs Controls - chosen_diff',x='lfp_cd - mean beta weight from lfp ROI',y='No. Participants')
+
+
+```

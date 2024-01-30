@@ -1,0 +1,264 @@
+---
+title: "questionnaire_preprocessing_analysis"
+author: "RB"
+date: '2022-06-08'
+output: html_document
+---
+
+load libraries and data
+```{r}
+library(tidyverse)
+
+## questionnaire data
+data <- read.csv('raw_data/main/questionnaires/DDA_questionnaires.csv') %>%
+  filter(!ResponseId == 'R_ymPXsyeopBF5st3') %>%
+  filter(!DistributionChannel == 'preview') %>%
+  rowid_to_column()
+
+## behavioural data
+# list of subject numbers in strings
+nr_s <- c('02','03','04','05','06','07','08','09','10','11','12','13','14','15','16','17','18','19','20','21','22')
+
+# read in first data file
+a <- read.csv("raw_data/main/sub_02/raw1_02.csv") %>%
+  select(!contains("fives")) 
+a['subject_nr'] <- nr_s[1]
+b <- read.csv("raw_data/main/sub_02/raw2_02.csv") %>%
+  select(!contains("fives"))
+b['subject_nr'] <- nr_s[1]
+
+data_b <- rbind(a,b)
+
+# loop through the remaining files and bind to data 
+for (i in 1:21){
+file_1 <- str_replace_all("raw_data/main/sub_02/raw1_02.csv",'02',nr_s[i])
+file_2 <- str_replace_all("raw_data/main/sub_02/raw2_02.csv",'02',nr_s[i])
+
+a <- read.csv(file_1) %>%
+  select(!contains("fives"))
+a['subject_nr'] <- nr_s[i]
+b <- read.csv(file_2) %>%
+  select(!contains("fives"))
+b['subject_nr'] <- nr_s[i]
+
+data_b <- rbind(data_b,a,b)
+}
+
+# filter out all of the time outs
+data_b <- data_b %>%
+  filter(!chosenDice == 'Inf')
+
+# add ppt number for ppt 1
+for (i in data$rowid){
+  if (data[i,]$ExternalReference == '001'){
+  data[i,]$Q1 = 1  
+  } 
+}
+```
+
+isolate and clean ami questions
+```{r}
+# isolate the questions
+AMI <- data %>%
+  select(Q1,Q1_1,Q1_2,Q1_3,Q1_4,Q1_5,Q1_6,Q1_7,Q1_8,Q1_9,Q1_10,Q1_11,Q1_12,Q1_13,Q1_14,Q1_15,Q1_16,Q1_17,Q1_18) 
+
+# remove first two rows, doesn't contain data
+AMI <- AMI[3:23,] %>%
+  mutate(total = NA) 
+
+AMI <- as.data.frame(sapply(AMI,as.numeric))
+
+# add up the total score for each particpant 
+for (i in AMI$Q1){
+  AMI[i,]$total = sum(AMI[i,2:19])
+}
+
+# AMI scores
+AMI_scores <- AMI %>%
+  select(Q1,total)
+```
+
+HADS
+```{r}
+HADS <- data %>%
+  select(Q1, Q1.1,Q2,Q3,Q4,Q5,Q6,Q7,Q8,Q9,Q10,Q11,Q12,Q13,Q14)
+
+HADS <- HADS[3:23,] %>%
+  mutate(total = NA)
+
+HADS <- as.data.frame(sapply(HADS,as.numeric))
+
+# recode the values
+# start them from 0 instead of 1
+HADS[,2:15] <- HADS[,2:15]-1
+# then reverse the reverse scored items 
+HADS$Q3 <- 3-HADS$Q3
+HADS$Q4 <- 3-HADS$Q4
+HADS$Q7 <- 3-HADS$Q7
+HADS$Q10 <- 3-HADS$Q10
+HADS$Q13 <- 3-HADS$Q13
+HADS$Q14 <- 3-HADS$Q14
+
+# add up total for each ppt
+for (i in HADS$Q1){
+  HADS[i,]$total = sum(HADS[i,2:14])
+}
+
+HADS_scores <- HADS %>%
+  select(Q1,total)
+```
+
+```{r}
+GRIT <- data %>%
+  select(Q1,Q1.2,Q2.1,Q3.1,Q4.1,Q5.1,Q6.1,Q7.1,Q8.1)
+
+GRIT <- GRIT[3:23,] %>%
+  mutate(total = NA)
+
+GRIT <- as.data.frame(sapply(GRIT,as.numeric))
+
+# recode the values
+# reverse scoring for 2,4,7,8
+GRIT$Q2.1 <- 6-GRIT$Q2.1
+GRIT$Q4.1 <- 6-GRIT$Q4.1
+GRIT$Q7.1 <- 6-GRIT$Q7.1
+GRIT$Q8.1 <- 6-GRIT$Q8.1
+
+# add up total for each ppt
+for (i in GRIT$Q1){
+  GRIT[i,]$total = sum(GRIT[i,2:9])
+}
+
+GRIT_scores <- GRIT %>%
+  select(Q1,total)
+```
+
+### Analysis ###
+
+```{r}
+# isolate the extinction states and select the needed variables 
+filling_states <- data_b %>%
+  select(subject_nr, chosenDice, stateTime, state, trialIndex) %>%
+  group_by(subject_nr) %>%
+  filter(stateTime > 3) %>%
+  filter(state == 3 | state == 8 | state == 12 | state == 18) %>%
+  rowid_to_column()
+
+# add column for correct answer
+filling_states["correct"] = 0
+
+# set correct=1 when chose the dice associated to non devalued token
+for (i in filling_states$rowid){
+  if (filling_states[i,]$state == 3 & filling_states[i,]$chosenDice == 1){
+    filling_states[i,]$correct = 1
+  } else if (filling_states[i,]$state == 8 & filling_states[i,]$chosenDice == 2){
+    filling_states[i,]$correct = 1
+  } else if (filling_states[i,]$state == 12 & filling_states[i,]$chosenDice == 1){
+    filling_states[i,]$correct = 1
+  } else if (filling_states[i,]$state == 18 & filling_states[i,]$chosenDice == 1){
+    filling_states[i,]$correct = 1
+  }
+}
+
+# isolate the extinction states and select the needed variables 
+extinction_states <- data_b %>%
+  select(subject_nr, chosenDice, stateTime, state, trialIndex) %>%
+  group_by(subject_nr) %>%
+  filter(stateTime < 2) %>%
+  filter(state == 4 | state == 9 | state == 13 | state == 19) %>%
+  rowid_to_column()
+
+# add column for correct answer
+extinction_states["correct"] = 0
+
+# set correct=1 when chose the dice associated to non devalued token
+for (i in extinction_states$rowid){
+  if (extinction_states[i,]$state == 4 & extinction_states[i,]$chosenDice == 2){
+    extinction_states[i,]$correct = 1
+  } else if (extinction_states[i,]$state == 9 & extinction_states[i,]$chosenDice == 1){
+    extinction_states[i,]$correct = 1
+  } else if (extinction_states[i,]$state == 13 & extinction_states[i,]$chosenDice == 2){
+    extinction_states[i,]$correct = 1
+  } else if (extinction_states[i,]$state == 19 & extinction_states[i,]$chosenDice == 2){
+    extinction_states[i,]$correct = 1
+  }
+}
+
+# create reinstatement states data frame
+devalued_states <- data_b %>%
+  filter(state == 5 | state == 10 | state == 14 | state == 20) %>%
+  select(state, chosenDice, subject_nr, trialIndex, stateTime) %>%
+  filter(stateTime < 9) %>%
+  group_by(subject_nr) %>%
+  rowid_to_column() 
+
+# add column for correct answer
+devalued_states["correct"] <- 0
+
+# make correct = 1 when the correct dice was chosen
+for (i in devalued_states$rowid){
+  if (devalued_states[i,]$state == 5 & devalued_states[i,]$chosenDice == 2){
+    devalued_states[i,]$correct = 1
+  } else if (devalued_states[i,]$state == 10 & devalued_states[i,]$chosenDice == 1){
+    devalued_states[i,]$correct = 1
+  } else if (devalued_states[i,]$state == 14 & devalued_states[i,]$chosenDice == 2){
+    devalued_states[i,]$correct = 1  
+  } else if (devalued_states[i,]$state == 20 & devalued_states[i,]$chosenDice == 2){
+    devalued_states[i,]$correct = 1  
+  }
+}
+
+## calc means
+devalued_states <- devalued_states %>%
+  mutate(reinstatement_mean = mean(correct)) %>%
+  distinct(subject_nr, reinstatement_mean) %>%
+  rowid_to_column()
+
+filling_states <- filling_states %>%
+  mutate(filling_mean = mean(correct)) %>%
+  distinct(subject_nr, filling_mean) %>%
+  rowid_to_column()
+
+
+AMI_scores <- AMI_scores %>%
+  rename(rowid = Q1) %>%
+  rename(AMI = total)
+HADS_scores <- HADS_scores %>%
+  rename(rowid = Q1) %>%
+  rename(HADS = total)
+GRIT_scores <- GRIT_scores %>%
+  rename(rowid = Q1) %>%
+  rename(GRIT = total)
+
+results <- extinction_states %>%
+  mutate(extinction_mean = mean(correct)) %>%
+  distinct(subject_nr, extinction_mean) %>%
+  rowid_to_column()
+
+results <- merge(results,AMI_scores)
+results <- merge(results,HADS_scores)
+results <- merge(results,GRIT_scores)
+results <- merge(results,devalued_states)
+results <- merge(results,filling_states)
+
+# one sample t tests of choice probabilities against chance level
+t.test(results$extinction_mean, mu=0.5)
+t.test(results$reinstatement_mean, mu=0.5)
+
+results$reinstatement_mean = results$reinstatement_mean - 0.5
+results$extinction_mean = results$extinction_mean - 0.5
+
+# reinstatement correlations
+cor.test(results$AMI,results$reinstatement_mean)
+cor.test(results$HADS,results$reinstatement_mean)
+cor.test(results$GRIT,results$reinstatement_mean)
+
+# extinction correlations
+cor.test(results$AMI,results$extinction_mean)
+cor.test(results$HADS,results$extinction_mean)
+cor.test(results$GRIT,results$extinction_mean)
+```
+
+```{r}
+write.csv(results, 'results/questionnaire_results.csv')
+```

@@ -1,0 +1,255 @@
+---
+title: "checks"
+author: "RB"
+date: "2023-09-25"
+output: html_document
+---
+
+load packages
+```{r}
+library(tidyverse)
+library(wesanderson)
+library(gridExtra)
+library(ggpubr)
+library(rstan)
+library(plotrix)
+source('scripts/reverseFromZero.R')
+```
+
+load online or offline data (online = in scanner)
+```{r}
+online = 1
+```
+
+load in the data 
+```{r}
+# read in the cleaned data, made in script 1.preprocess_2c.rmd
+if (online == 1)
+{
+  real_data = read.csv('raw_data/clean/real_data_online.csv')
+  sim_data = read.csv('raw_data/clean/sim_data_online.csv')
+  parameters <- read.csv('raw_data/clean/parameters_online.csv')
+} else {
+  real_data = read.csv('raw_data/clean/real_data_offline.csv')
+  sim_data = read.csv('raw_data/clean/sim_data_offline.csv')
+  parameters <- read.csv('raw_data/clean/parameters_offline.csv')
+}
+
+# read in cleaned questionnaire data
+Q_results <- read.csv('questionnaire_results.csv')
+
+# read parameters
+fmri_vals <- read.csv('raw_data/clean/fmri_vals.csv')
+
+# set variable to data for analysis
+data <- real_data
+
+```
+
+### colineaity of chosen devaluation and chose devaluaed option during devaluation?
+```{r}
+colinear <- data %>%
+  select(correct,chosen_dev,isPurseFull_1,isPurseFull_2) %>%
+  mutate(devaluation=(isPurseFull_1+isPurseFull_2)) %>%
+  mutate(correct=correct*devaluation) %>% # isolate correct answers only in dev
+  mutate(incorrect=1-correct) %>% # now isolate incorrect choices during extinction
+  mutate(incorrect=incorrect*devaluation) %>%
+  filter(devaluation == 1) %>%
+  rowid_to_column() 
+
+colinear[is.na(colinear)] <- 0
+
+for (i in colinear$rowid){
+  if (colinear[i,]$chosen_dev < 0.001){
+    colinear[i,]$chosen_dev = 0
+  } else if (colinear[i,]$chosen_dev > 0.001){
+    colinear[i,]$chosen_dev = 1
+  }
+}
+
+comp <- colinear %>%
+  select(incorrect,chosen_dev)
+
+cor(colinear$correct,colinear$chosen_dev)
+cor(colinear$incorrect,colinear$chosen_dev)
+```
+
+#### STAY SWITCH ANALYSIS ###
+Did participants choose the same option or switch when faced with certain outcomes?
+
+probability of switching after receiving a reward or receiving nothing
+```{r}
+## create the data frame 
+switch_stay <- data %>%
+  select(subject_nr,totalWin,chosenDice) %>%
+  group_by(subject_nr) %>%
+  rowid_to_column()
+
+# create switch column
+switch_stay["switch"] <- 1
+
+# set switch = 1 for switch and switch = 0 for stay
+for (i in switch_stay$rowid){
+  if (switch_stay[i,]$rowid == 1) next
+  if (switch_stay[i,]$chosenDice == switch_stay[i-1,]$chosenDice){
+    switch_stay[i-1,]$switch = 0
+  }
+}
+
+# did they switch after a win
+win_switch <- switch_stay %>%
+  filter(totalWin == 1) %>%
+  group_by(subject_nr) %>%
+  mutate(stay = 1-switch)
+
+mean(win_switch$switch)
+
+# did they switch after getting nothing
+nil_switch <- switch_stay %>%
+  filter(totalWin == 0) %>%
+  group_by(subject_nr) %>%
+  mutate(stay = 1-switch)
+
+mean(nil_switch$switch)
+
+switch_stay <- switch_stay %>%
+  group_by(subject_nr) %>%
+  mutate(stay = 1-switch)
+```
+
+
+plot the probability of switching as a box plot
+```{r}
+plotting_2 <- switch_stay %>%
+  group_by(totalWin, subject_nr) %>%
+  mutate(p = mean(stay)) 
+plotting_2["previous_outcome"] <- 'nothing'
+
+for (i in plotting_2$rowid){
+  if (plotting_2[i,]$totalWin == 1){
+    plotting_2[i,]$previous_outcome = 'win'
+  }
+}
+
+box_2 <- ggplot(plotting_2, aes(x=previous_outcome, y=p, group=previous_outcome, fill=previous_outcome)) +
+  scale_fill_manual(values = wes_palette("Darjeeling1", n = 2)) +
+  geom_boxplot() +
+  theme(axis.line = element_line(color='black'),
+        panel.background = element_blank()) +
+  labs(title = "Probabilty of choosing the same dice after wins or receiving nothing", x="previous outcome", y="p(stay)") +
+  scale_y_continuous(limits = c(-0.1,1.1), breaks = c(0,0.25,0.5,0.75,1)) +
+  theme(text = element_text(size=12)) 
+```
+
+
+switch stay on trial 2 of reinstatement after loss, win devalued, win valued
+```{r}
+# create the data frame for reinstatement states
+reinstatement <- data %>%
+  select(state,stateTime,stateName,totalWin,isWinPurseFull,chosenDice,subject_nr) %>%
+  filter(stateName == 'reinstatement') %>%
+  rowid_to_column()
+
+# create the prev outcome column
+reinstatement['prev_outcome'] <- 'win'
+
+# set previous outcome to win loss or devalued depending on outcome
+for (i in reinstatement$rowid){
+  if (reinstatement[i,]$rowid == 1) next
+  if (reinstatement[i-1,]$totalWin == 0)
+    reinstatement[i,]$prev_outcome = 'loss'
+  else if (reinstatement[i-1,]$totalWin == 1 && reinstatement[i-1,]$isWinPurseFull == 1){
+    reinstatement[i,]$prev_outcome = 'devalued'
+  }
+}
+
+#create the switch column
+reinstatement['switch'] <- 0
+
+# set switch to 1 when they switched
+for (i in reinstatement$rowid){
+  if (reinstatement[i,]$rowid == 1) next
+  if (reinstatement[i,]$chosenDice != reinstatement[i-1,]$chosenDice){
+    reinstatement[i,]$switch = 1
+  }
+}
+
+# create another data frame which removes t=1 as we only care about t=2 now
+reinstatement_1 <- reinstatement %>%
+  group_by(subject_nr,prev_outcome) %>%
+  mutate(p = mean(switch)) %>%
+  distinct(subject_nr,p,prev_outcome) 
+
+switch_averages <- reinstatement_1 %>%
+  filter(prev_outcome=='win')
+
+### now do the same again but for trial 3
+reinstatement <- data %>%
+  select(state,stateTime,stateName,totalWin,isWinPurseFull,chosenDice,subject_nr) %>%
+  filter(stateName == 'reinstatement') %>%
+  filter(stateTime == 2 | stateTime == 3) %>%
+  rowid_to_column()
+
+reinstatement['prev_outcome'] <- 'win'
+
+for (i in reinstatement$rowid){
+  if (reinstatement[i,]$rowid == 1) next
+  if (reinstatement[i-1,]$totalWin == 0)
+    reinstatement[i,]$prev_outcome = 'loss'
+  else if (reinstatement[i-1,]$totalWin == 1 && reinstatement[i-1,]$isWinPurseFull == 1){
+    reinstatement[i,]$prev_outcome = 'devalued'
+  }
+}
+
+#switch?
+
+reinstatement['switch'] <- 0
+
+for (i in reinstatement$rowid){
+  if (reinstatement[i,]$rowid == 1) next
+  if (reinstatement[i,]$chosenDice != reinstatement[i-1,]$chosenDice){
+    reinstatement[i,]$switch = 1
+  }
+}
+
+reinstatement_2 <- reinstatement %>%
+  group_by(subject_nr,stateTime,prev_outcome) %>%
+  mutate(p = mean(switch)) %>%
+  distinct(subject_nr,p,prev_outcome) %>%
+  filter(!stateTime == 2)
+
+## correlations 
+  cor.test(switch_averages$p,vmpfc_cd)
+  cor.test(switch_averages$p,vmpfc_rd)
+  cor.test(switch_averages$p,vs_rd)
+  cor.test(switch_averages$p,vmpfc_m)
+  cor.test(switch_averages$p,dmpfc_cd)
+```
+
+
+create box plots with these switch probabilities for the 2nd and 3rd trial after reinstatment 
+```{r}
+box_4 <- ggplot(reinstatement_1, aes(x=prev_outcome, y=p, group=prev_outcome, fill=prev_outcome)) +
+  scale_fill_manual(values = wes_palette("Darjeeling1", n = 3)) +
+  geom_boxplot() +
+  geom_jitter(aes(y=p, x=prev_outcome, group=subject_nr), width=0.2, height = 0) +
+  theme(axis.line = element_line(color='black'),
+        legend.position = 'none', 
+        panel.background = element_blank()) + 
+  labs(title = "Probabilty of switching on trial 2 of reinstatement", x="previous outcome", y="p(switch)") +
+  scale_y_continuous(limits = c(-0.1,1.1), breaks = c(0,0.25,0.5,0.75,1)) +
+  theme(text = element_text(size=12)) 
+
+box_5 <- ggplot(reinstatement_2, aes(x=prev_outcome, y=p, group=prev_outcome, fill=prev_outcome)) +
+  scale_fill_manual(values = wes_palette("Darjeeling1", n = 3)) +
+  geom_boxplot() +
+  geom_jitter(aes(y=p, x=prev_outcome, group=subject_nr), width=0.2, height=0) +
+  theme(axis.line = element_line(color='black'),
+        panel.background = element_blank(),
+        legend.position = 'none') +
+  labs(title = "Probabilty of switching on trial 3 of reinstatement", x="previous outcome", y="p(switch)") +
+  scale_y_continuous(limits = c(-0.1,1.1), breaks = c(0,0.25,0.5,0.75,1)) +
+  theme(text = element_text(size=12)) 
+
+grid.arrange(box_4,box_5,ncol=2)
+```
