@@ -1,0 +1,49 @@
+%% Extract region of interest mask 
+
+% Note in order for the fsl commands to work, MATLAB needs to be launched
+% from terminal e.g. /Applications/MATLAB_R2021a.app/bin/matlab &
+
+% Creates a mask in standard space consisting of a sphere around the centre
+% specified in 'coords' 
+
+%% set FSL environment
+setenv('FSLDIR','/usr/local/fsl');  % location of FSL folder
+setenv('FSLOUTPUTTYPE', 'NIFTI_GZ'); % type of output 
+
+%% Define ROI  
+
+coords = [29, 94, 35]; % Coordinates need to be in standard space (NOT MNI coordinates) 
+ROI_NAME = 'vmPFC'; % output name 
+sphere_radius=3; % Radius of ROI sphere
+
+%% Define files 
+standard_brain = '/usr/local/fsl/data/standard/MNI152_T1_2mm.nii.gz';
+mask_directory = '';
+
+% create output folder 
+roi_folder = [mask_directory, ROI_NAME]; 
+
+if ~isfolder(roi_folder)
+    mkdir(roi_folder) 
+else
+    disp('WARNING: folder exists already. Risk re-writing ROI'); 
+end
+
+point_file = [roi_folder,'/', ROI_NAME, '_point']; 
+sphere_file = [roi_folder,'/', ROI_NAME, '_sphere']; 
+binned_sphere_file = [roi_folder,'/',ROI_NAME, '_binned_sphere'];
+activity_folder = [roi_folder,'/',ROI_NAME, '/meanActivity/'];
+
+%% Create ROI single point
+
+cmdStr = ['/usr/local/fsl/bin/fslmaths ' standard_brain ' -mul 0 -add 1 -roi ' num2str(coords(1)) ' 1 ' num2str(coords(2)) ' 1 ' num2str(coords(3)) ' 1 0 1 ' point_file ' -odt float']; 
+% the mul 0 gets rid of all intensities, the -add 1 makes it into a command , then the ROI command takes the standard (voxel) coordinates.  
+system(cmdStr) 
+
+%% Create a sphere around it 
+
+cmdStr = ['/usr/local/fsl/bin/fslmaths ' point_file ' -kernel sphere ' num2str(sphere_radius) ' -fmean ' sphere_file ' -odt float']; 
+system(cmdStr)
+
+% Load the point file into FSL to check coordinate before continuing to
+% 2_make_time_series.m
